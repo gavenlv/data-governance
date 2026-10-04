@@ -1,0 +1,164 @@
+# ============================================================================
+# 实体类型与关系类型定义（Model Registry 输入）
+# 设计依据：docs/08-metadata-model.md §3、§4.6、§6
+#
+# 铁律（08 §1）：
+#   1) Aspect 是变更的最小单位
+#   2) Edge 是一等公民（带来源/置信度/时效），不塞进实体 JSON
+#   3) 扩展优先，但不许用 customProperties 逃避建模
+# ============================================================================
+apiVersion: dg.model/v1
+kind: EntityTypes
+
+entityTypes:
+  - name: Platform
+    displayName: 数据平台
+    description: 外部系统实例（mysql-prod、trino-a 等）
+    namespaceScoped: true
+    aspects: [descriptions, tags, ownership]
+
+  - name: Container
+    displayName: 容器
+    description: 库 / Schema / Catalog / Bucket
+    parentTypes: [Platform]
+    aspects: [descriptions, tags, ownership, lifecycle]
+
+  - name: Dataset
+    displayName: 数据集
+    description: 表 / 视图 / 物化视图 / 文件集
+    parentTypes: [Container]
+    aspects: [descriptions, tags, ownership, datasetSchema, classification, lifecycle, trustLevel]
+
+  - name: Column
+    displayName: 列
+    parentTypes: [Dataset]
+    aspects: [descriptions, tags, classification, columnProfile]
+
+  - name: Pipeline
+    displayName: 处理管道
+    description: DAG / 作业定义（Airflow DAG、dbt model、Spark job）
+    parentTypes: [Platform]
+    aspects: [descriptions, tags, ownership, lifecycle]
+
+  - name: Dashboard
+    displayName: 报表 / 看板
+    parentTypes: [Platform]
+    aspects: [descriptions, tags, ownership, lifecycle, trustLevel, dashboardSpec]
+
+  - name: GlossaryTerm
+    displayName: 业务术语
+    aspects: [descriptions, tags, ownership]
+
+  - name: Tag
+    displayName: 标签
+    aspects: [descriptions]
+
+  - name: Team
+    displayName: 团队
+    aspects: [descriptions]
+
+  - name: User
+    displayName: 用户
+    aspects: [descriptions]
+
+  - name: Domain
+    displayName: 业务域
+    aspects: [descriptions, ownership]
+
+  # ---------------------------------------------------------------------------
+  # Batch 2 新增实体类型（契约与质量规则）。
+  # 把契约与规则做成**一等实体**（而不是塞在某个表里）的理由：
+  #   - 它们需要 Owner、标签、分级与生命周期（治理属性是现成的）；
+  #   - 它们需要版本历史（aspect_history 现成）；
+  #   - 它们需要出现在检索与血缘里（生产者能看到"谁在用我的数据"）。
+  # 新增实体类型同样不需要改核心代码。
+  # ---------------------------------------------------------------------------
+  - name: DataContract
+    displayName: 数据契约
+    description: 生产者与消费者之间的可执行接口（ODCS 兼容）
+    namespaceScoped: true
+    aspects: [descriptions, tags, ownership, lifecycle, contractSpec]
+
+  - name: QualityRule
+    displayName: 质量规则
+    description: 统一 IR 的质量规则（可编译为引擎 SQL 或外部 DSL）
+    namespaceScoped: true
+    aspects: [descriptions, tags, ownership, lifecycle, ruleSpec]
+
+# ---------------------------------------------------------------------------
+# 关系类型。category 决定删除语义（借鉴 Atlas relationshipCategory，见 08 §4.6）：
+#   COMPOSITION = 子不能脱离父存在 → 删除父时级联软删
+#   AGGREGATION = 子可独立存在       → 删除父时仅解除关系
+#   ASSOCIATION = 纯引用             → 只删边
+# ---------------------------------------------------------------------------
+relationshipTypes:
+  - name: contains
+    displayName: 包含
+    category: COMPOSITION
+    from: [Platform, Container, Dataset]
+    to: [Container, Dataset, Column]
+
+  - name: derivesFrom
+    displayName: 数据血缘
+    description: 数据流向。统一约定：**from = 上游（数据来源），to = 下游（数据去向）**。注意 OpenLineage 的 columnLineage facet 方向相反（输出列→输入列），接入时必须显式反转（docs/08 §7.1）
+    category: ASSOCIATION
+    lineage: true
+    from: [Dataset, Column]
+    to: [Dataset, Column]
+
+  - name: ownedBy
+    displayName: 归属
+    category: ASSOCIATION
+    from: [Platform, Container, Dataset, Column, Pipeline, Dashboard, GlossaryTerm, Domain]
+    to: [User, Team]
+
+  - name: taggedWith
+    displayName: 打标
+    category: ASSOCIATION
+    from: [Platform, Container, Dataset, Column, Pipeline, Dashboard, GlossaryTerm]
+    to: [Tag]
+
+  - name: partOfDomain
+    displayName: 属于域
+    category: AGGREGATION
+    from: [Dataset, Dashboard, Pipeline, GlossaryTerm]
+    to: [Domain]
+
+  - name: readsFrom
+    displayName: 读取
+    description: |
+      关联语义边（**不是血缘边**）：方向表达"谁在读"，主语是 Pipeline/Dashboard。
+      血缘边必须遵循全局约定 from=上游、to=下游，因此"数据集被报表消费"用 consumedBy，
+      而不是把这条边反过来用 —— 一条方向错的血缘边会让人在排查影响面时走向完全相反的方向。
+    category: ASSOCIATION
+    from: [Pipeline, Dashboard]
+    to: [Dataset]
+
+  - name: consumedBy
+    displayName: 被消费
+    description: |
+      血缘边：数据集/列被下游资产（报表、管道）消费。方向遵循 from=上游、to=下游，
+      因此 BI 报表的影响分析（"这张表要改，哪些看板会受影响"）可以直接复用血缘遍历。
+    category: ASSOCIATION
+    lineage: true
+    from: [Dataset, Column]
+    to: [Dashboard, Pipeline]
+
+  - name: writesTo
+    displayName: 写入
+    category: ASSOCIATION
+    from: [Pipeline]
+    to: [Dataset]
+
+  - name: mappedToTerm
+    displayName: 映射到术语
+    category: ASSOCIATION
+    from: [Dataset, Column]
+    to: [GlossaryTerm]
+
+  # Batch 2 新增：契约 / 规则约束哪些数据集或列（用于"契约违约沿血缘传播"与规则影响面）
+  - name: appliesTo
+    displayName: 约束
+    category: ASSOCIATION
+    from: [DataContract, QualityRule]
+    to: [Dataset, Column]

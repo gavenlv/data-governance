@@ -22,3 +22,46 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# ---------------------------------------------------------------------------
+# Python（Phase 0 的控制面实现）
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 本地配置与密钥（绝不提交；.env.example 为模板需提交）
+.env
+.env.*
+!.env.example
+*.local.yaml
+
+# ---------------------------------------------------------------------------
+# Node / 前端（web/：Vite + React + TypeScript）
+# ---------------------------------------------------------------------------
+node_modules/
+.pnpm-store/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
+

@@ -1,0 +1,566 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://data-governance.local/model/v1",
+  "title": "Data Governance Platform metadata model",
+  "generatedFrom": [
+    "core\\aspects.yaml",
+    "core\\entities.yaml"
+  ],
+  "x-entityTypes": [
+    "Column",
+    "Container",
+    "Dashboard",
+    "DataContract",
+    "Dataset",
+    "Domain",
+    "GlossaryTerm",
+    "Pipeline",
+    "Platform",
+    "QualityRule",
+    "Tag",
+    "Team",
+    "User"
+  ],
+  "x-relationshipCategories": {
+    "appliesTo": "ASSOCIATION",
+    "consumedBy": "ASSOCIATION",
+    "contains": "COMPOSITION",
+    "derivesFrom": "ASSOCIATION",
+    "mappedToTerm": "ASSOCIATION",
+    "ownedBy": "ASSOCIATION",
+    "partOfDomain": "AGGREGATION",
+    "readsFrom": "ASSOCIATION",
+    "taggedWith": "ASSOCIATION",
+    "writesTo": "ASSOCIATION"
+  },
+  "$defs": {
+    "aspect.classification": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "title": "level",
+          "type": "string",
+          "enum": [
+            "L1",
+            "L2",
+            "L3",
+            "L4"
+          ],
+          "default": "L2"
+        },
+        "categories": {
+          "title": "categories",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "piiTypes": {
+          "title": "piiTypes",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "appliedBy": {
+          "title": "appliedBy",
+          "type": "object"
+        },
+        "propagation": {
+          "title": "propagation",
+          "type": "object"
+        },
+        "reviewedBy": {
+          "title": "reviewedBy",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "aspect.columnProfile": {
+      "type": "object",
+      "properties": {
+        "rowCount": {
+          "title": "rowCount",
+          "type": "integer"
+        },
+        "nullRatio": {
+          "title": "nullRatio",
+          "type": "number"
+        },
+        "distinctCount": {
+          "title": "distinctCount",
+          "type": "integer"
+        },
+        "minValue": {
+          "title": "minValue",
+          "type": "string"
+        },
+        "maxValue": {
+          "title": "maxValue",
+          "type": "string"
+        },
+        "sampledAt": {
+          "title": "sampledAt",
+          "type": "string"
+        },
+        "precision": {
+          "title": "precision",
+          "type": "string",
+          "enum": [
+            "ESTIMATED",
+            "EXACT"
+          ],
+          "default": "ESTIMATED"
+        },
+        "precisionSource": {
+          "title": "precisionSource",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "aspect.contractSpec": {
+      "type": "object",
+      "properties": {
+        "apiVersion": {
+          "title": "apiVersion",
+          "type": "string"
+        },
+        "kind": {
+          "title": "kind",
+          "type": "string",
+          "default": "DataContract"
+        },
+        "contractVersion": {
+          "title": "contractVersion",
+          "type": "string"
+        },
+        "status": {
+          "title": "status",
+          "type": "string",
+          "enum": [
+            "DRAFT",
+            "PROPOSED",
+            "ACTIVE",
+            "DEPRECATED",
+            "RETIRED"
+          ],
+          "default": "DRAFT"
+        },
+        "compatibility": {
+          "title": "compatibility",
+          "type": "string",
+          "enum": [
+            "BACKWARD",
+            "FORWARD",
+            "FULL",
+            "NONE"
+          ],
+          "default": "BACKWARD"
+        },
+        "schema": {
+          "title": "schema",
+          "type": "object"
+        },
+        "primaryKey": {
+          "title": "primaryKey",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "quality": {
+          "title": "quality",
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "sla": {
+          "title": "sla",
+          "type": "object"
+        },
+        "semantic": {
+          "title": "semantic",
+          "type": "object"
+        },
+        "access": {
+          "title": "access",
+          "type": "object"
+        },
+        "examples": {
+          "title": "examples",
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "domain": {
+          "title": "domain",
+          "type": "string"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "contractVersion"
+      ],
+      "additionalProperties": false
+    },
+    "aspect.dashboardSpec": {
+      "type": "object",
+      "properties": {
+        "externalId": {
+          "title": "externalId",
+          "type": "string"
+        },
+        "specSource": {
+          "title": "specSource",
+          "type": "string",
+          "enum": [
+            "superset",
+            "tableau",
+            "metabase",
+            "powerbi",
+            "other"
+          ],
+          "default": "superset"
+        },
+        "url": {
+          "title": "url",
+          "type": "string"
+        },
+        "chartCount": {
+          "title": "chartCount",
+          "type": "integer"
+        },
+        "charts": {
+          "title": "charts",
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "datasetUrns": {
+          "title": "datasetUrns",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "published": {
+          "title": "published",
+          "type": "boolean"
+        },
+        "certified": {
+          "title": "certified",
+          "type": "boolean"
+        },
+        "lastRefreshedAt": {
+          "title": "lastRefreshedAt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "externalId"
+      ],
+      "additionalProperties": false
+    },
+    "aspect.datasetSchema": {
+      "type": "object",
+      "properties": {
+        "fields": {
+          "title": "fields",
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "primaryKey": {
+          "title": "primaryKey",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "partitionKeys": {
+          "title": "partitionKeys",
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "schemaHash": {
+          "title": "schemaHash",
+          "type": "string"
+        },
+        "rawTypeSystem": {
+          "title": "rawTypeSystem",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "aspect.descriptions": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "title": "text",
+          "type": "string"
+        },
+        "language": {
+          "title": "language",
+          "type": "string",
+          "default": "zh"
+        },
+        "source": {
+          "title": "source",
+          "type": "string",
+          "enum": [
+            "MANUAL",
+            "IMPORTED",
+            "AI_GENERATED",
+            "AUTO_COLLECTED"
+          ],
+          "default": "MANUAL"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "aspect.lifecycle": {
+      "type": "object",
+      "properties": {
+        "stage": {
+          "title": "stage",
+          "type": "string",
+          "enum": [
+            "DRAFT",
+            "PRODUCTION",
+            "DEPRECATED",
+            "ARCHIVED"
+          ],
+          "default": "PRODUCTION"
+        },
+        "deprecationNote": {
+          "title": "deprecationNote",
+          "type": "string"
+        },
+        "replacedBy": {
+          "title": "replacedBy",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "aspect.ownership": {
+      "type": "object",
+      "properties": {
+        "owners": {
+          "title": "owners",
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "aspect.ruleSpec": {
+      "type": "object",
+      "properties": {
+        "ruleId": {
+          "title": "ruleId",
+          "type": "string"
+        },
+        "metric": {
+          "title": "metric",
+          "type": "string",
+          "enum": [
+            "null_count",
+            "null_ratio",
+            "missing_count",
+            "distinct_count",
+            "duplicate_count",
+            "duplicate_ratio",
+            "row_count",
+            "freshness_seconds",
+            "percentile",
+            "pattern_match_rate",
+            "custom_sql"
+          ]
+        },
+        "operator": {
+          "title": "operator",
+          "type": "string",
+          "enum": [
+            "=",
+            "!=",
+            ">",
+            ">=",
+            "<",
+            "<=",
+            "between",
+            "in"
+          ],
+          "default": "="
+        },
+        "threshold": {
+          "title": "threshold",
+          "type": "number"
+        },
+        "thresholdMax": {
+          "title": "thresholdMax",
+          "type": "number"
+        },
+        "column": {
+          "title": "column",
+          "type": "string"
+        },
+        "columns": {
+          "title": "columns",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "window": {
+          "title": "window",
+          "type": "string"
+        },
+        "percentile": {
+          "title": "percentile",
+          "type": "number"
+        },
+        "pattern": {
+          "title": "pattern",
+          "type": "string"
+        },
+        "acceptedValues": {
+          "title": "acceptedValues",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "customSql": {
+          "title": "customSql",
+          "type": "string"
+        },
+        "expected": {
+          "title": "expected",
+          "type": "string"
+        },
+        "severity": {
+          "title": "severity",
+          "type": "string",
+          "enum": [
+            "INFO",
+            "LOW",
+            "MEDIUM",
+            "HIGH",
+            "CRITICAL"
+          ],
+          "default": "MEDIUM"
+        },
+        "dimension": {
+          "title": "dimension",
+          "type": "string",
+          "enum": [
+            "completeness",
+            "accuracy",
+            "consistency",
+            "timeliness",
+            "uniqueness",
+            "validity"
+          ],
+          "default": "validity"
+        },
+        "onFail": {
+          "title": "onFail",
+          "type": "string",
+          "enum": [
+            "BLOCK",
+            "ALERT",
+            "RECORD"
+          ],
+          "default": "ALERT"
+        },
+        "schedule": {
+          "title": "schedule",
+          "type": "object"
+        },
+        "engineHints": {
+          "title": "engineHints",
+          "type": "object"
+        },
+        "sourceFrontend": {
+          "title": "sourceFrontend",
+          "type": "string",
+          "enum": [
+            "yaml",
+            "sql_assertion",
+            "dbt_test"
+          ],
+          "default": "yaml"
+        }
+      },
+      "required": [
+        "ruleId",
+        "metric"
+      ],
+      "additionalProperties": false
+    },
+    "aspect.tags": {
+      "type": "object",
+      "properties": {
+        "tags": {
+          "title": "tags",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "aspect.trustLevel": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "title": "level",
+          "type": "string",
+          "enum": [
+            "CERTIFIED",
+            "WARNING",
+            "DEPRECATED",
+            "UNVERIFIED"
+          ],
+          "default": "UNVERIFIED"
+        },
+        "certifiedBy": {
+          "title": "certifiedBy",
+          "type": "string"
+        },
+        "certifiedAt": {
+          "title": "certifiedAt",
+          "type": "string"
+        },
+        "reason": {
+          "title": "reason",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  }
+}

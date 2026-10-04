@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.datagovernance</groupId>
+        <artifactId>dg-parent</artifactId>
+        <version>0.1.0</version>
+    </parent>
+
+    <artifactId>dg-sdk</artifactId>
+    <name>dg-sdk</name>
+    <!-- 状态：骨架，未实现（docs/09 §9.10） -->
+    <description>客户端 SDK（Java/TypeScript 由模型生成）。当前为骨架，未实现。</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-model</artifactId>
+        </dependency>
+        <!-- 骨架模块需要 spring-context 才能注册 CapabilityProvider Bean -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

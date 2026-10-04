@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.datagovernance</groupId>
+        <artifactId>dg-parent</artifactId>
+        <version>0.1.0</version>
+    </parent>
+
+    <artifactId>dg-quality</artifactId>
+    <name>dg-quality</name>
+    <!-- 状态：Batch 2 实现了 profiling / rules / contract / ci-gate；
+         异常检测与 SLO/事故仍为骨架（docs/09 §9.4，Phase 2） -->
+    <description>数据质量与可观测性：剖析 / 规则 IR 与执行 / 数据契约与 CI 门禁（docs/09 §9.4–9.5）</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-core</artifactId>
+        </dependency>
+        <!--
+          依赖 dg-ingestion 是刻意的：规则执行要复用「数据源连接层」（DSN 解析、env: 引用、
+          口令遮蔽）与 cron 归一化。复制一份 DSN 解析逻辑比多一个模块依赖危险得多 ——
+          凭证纪律有两份实现，早晚会有一份漏掉遮蔽。
+        -->
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-ingestion</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

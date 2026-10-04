@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>数据治理平台 · Phase 0</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --fg:#e6e9ef; --muted:#8b94a7; --accent:#4c8dff; --ok:#39d98a; --warn:#ffb020; --bad:#ff5c5c;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
+  header { position:sticky; top:0; background:rgba(15,17,21,.92); backdrop-filter:blur(8px);
+           border-bottom:1px solid var(--line); padding:14px 20px; display:flex; gap:14px; align-items:center; z-index:10; }
+  header h1 { font-size:15px; margin:0; font-weight:600; white-space:nowrap; }
+  header h1 span { color:var(--muted); font-weight:400; font-size:12px; margin-left:6px; }
+  #q { flex:1; padding:9px 12px; border-radius:8px; border:1px solid var(--line);
+       background:var(--panel); color:var(--fg); font-size:14px; }
+  #q:focus { outline:none; border-color:var(--accent); }
+  .btn { padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--panel2);
+         color:var(--fg); cursor:pointer; font-size:13px; }
+  .btn:hover { border-color:var(--accent); }
+  #token { width:150px; padding:8px 10px; border-radius:8px; border:1px solid var(--line);
+           background:var(--panel); color:var(--fg); font-size:12.5px; }
+  #token:focus { outline:none; border-color:var(--accent); }
+  #who { font-size:11.5px; color:var(--muted); white-space:nowrap; }
+  .denied { color:var(--bad); }
+  main { padding:20px; max-width:1080px; margin:0 auto; }
+  .bar { color:var(--muted); font-size:12px; margin-bottom:12px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .lag { padding:2px 8px; border-radius:99px; border:1px solid var(--line); }
+  .lag.warn { color:var(--warn); border-color:var(--warn); }
+  .lag.ok { color:var(--ok); border-color:var(--ok); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:10px; cursor:pointer; }
+  .card:hover { border-color:var(--accent); background:var(--panel2); }
+  .card h3 { margin:0 0 6px; font-size:14px; font-weight:600; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .urn { color:var(--muted); font-size:11.5px; font-family:ui-monospace,Consolas,monospace; word-break:break-all; }
+  .desc { color:#c3cad8; font-size:13px; margin:6px 0; }
+  .badge { font-size:11px; padding:1px 7px; border-radius:5px; background:var(--panel2);
+           border:1px solid var(--line); color:var(--muted); font-weight:500; }
+  .badge.t { color:var(--accent); border-color:#2d4a7d; }
+  .badge.l3 { color:var(--warn); border-color:#6b5417; }
+  .badge.l4 { color:var(--bad); border-color:#7d2d2d; }
+  .meta { display:flex; gap:14px; flex-wrap:wrap; color:var(--muted); font-size:12px; margin-top:8px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px; }
+  section h2 { font-size:13px; margin:0 0 12px; color:var(--muted); font-weight:600;
+               text-transform:uppercase; letter-spacing:.6px; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; }
+  pre { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:12px;
+        overflow:auto; font-size:12px; margin:0; max-height:340px; }
+  .empty { color:var(--muted); padding:28px; text-align:center; }
+  .back { color:var(--accent); cursor:pointer; font-size:12.5px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; }
+  .kv { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .kv b { display:block; color:var(--muted); font-size:11px; font-weight:500; margin-bottom:3px; }
+  .hint { color:var(--muted); font-size:12px; margin-top:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>数据治理平台<span>Phase 0</span></h1>
+  <input id="q" placeholder="搜索资产、列、术语…（标识符按 _ / 驼峰切分）" autocomplete="off" />
+  <button class="btn" id="btnSearch">搜索</button>
+  <button class="btn" id="btnRebuild" title="丢弃派生索引并从事件流重放重建">重建索引</button>
+  <input id="token" placeholder="访问令牌" autocomplete="off"
+         title="Bearer 令牌。本机开发可填 dev-admin-token / dev-steward-token / dev-reader-token" />
+  <span id="who"></span>
+</header>
+<main id="view"><div class="empty">输入关键词开始搜索，或直接查看任意资产。</div></main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const view = $('#view');
+
+// ---- 凭证：所有请求都走 Bearer 令牌（与 API 同一套授权判定，无 UI 专用后门）----
+const TOKEN_KEY = 'dg_token';
+function currentToken() {
+  return localStorage.getItem(TOKEN_KEY) || 'dev-admin-token';
+}
+function authHeaders() {
+  const t = currentToken();
+  return t ? { 'Authorization': 'Bearer ' + t } : {};
+}
+
+async function api(path, opts = {}) {
+  opts.headers = { ...(opts.headers || {}), ...authHeaders() };
+  const res = await fetch(path, opts);
+  const text = await res.text();
+  let body; try { body = JSON.parse(text); } catch { body = text; }
+  if (!res.ok) {
+    const msg = typeof body === 'string' ? body : (body.detail ?? JSON.stringify(body));
+    if (res.status === 401) throw new Error('未认证（401）：请在上方填写有效的访问令牌');
+    if (res.status === 403) throw new Error('无权限（403）：' + msg);
+    throw new Error(msg);
+  }
+  return body;
+}
+
+async function refreshIdentity() {
+  const el = $('#who');
+  try {
+    const me = await api('/api/v1/me');
+    el.className = '';
+    el.textContent = `${me.name || me.id} · ${(me.roles || []).join('/') || '无角色'} · 可见 ${me.maxVisibleLevel}`;
+  } catch (e) {
+    el.className = 'denied';
+    el.textContent = '未认证';
+  }
+}
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function clsBadge(level) {
+  if (!level) return '';
+  const c = level === 'L4' ? 'l4' : level === 'L3' ? 'l3' : '';
+  return `<span class="badge ${c}">${esc(level)}</span>`;
+}
+
+function renderLag(lag) {
+  return lag > 0
+    ? `<span class="lag warn">索引同步中（落后 ${lag} 条事件）</span>`
+    : `<span class="lag ok">索引已同步</span>`;
+}
+
+async function doSearch(q) {
+  view.innerHTML = '<div class="empty">搜索中…</div>';
+  try {
+    const data = await api('/api/v1/search?limit=50&q=' + encodeURIComponent(q));
+    const bar = `<div class="bar"><span>${data.count} 个结果</span>${renderLag(data.indexLag)}</div>`;
+    if (!data.results.length) {
+      view.innerHTML = bar + `<div class="empty">没有匹配的资产。<br><span class="hint">换关键词，或确认采集任务是否已运行。</span></div>`;
+      return;
+    }
+    view.innerHTML = bar + data.results.map(r => `
+      <div class="card" data-urn="${esc(r.urn)}">
+        <h3>${esc(r.display_name || r.urn)} <span class="badge t">${esc(r.entity_type)}</span>${clsBadge(r.classification)}</h3>
+        <div class="urn">${esc(r.urn)}</div>
+        ${r.description ? `<div class="desc">${esc(r.description)}</div>` : ''}
+        <div class="meta">
+          ${r.owners?.length ? `<span>Owner: ${esc(r.owners.join(', '))}</span>` : '<span>无 Owner</span>'}
+          ${r.platform ? `<span>平台: ${esc(r.platform)}</span>` : ''}
+          ${r.tags?.length ? `<span>标签: ${esc(r.tags.join(', '))}</span>` : ''}
+        </div>
+      </div>`).join('');
+    view.querySelectorAll('.card').forEach(el =>
+      el.onclick = () => showAsset(el.dataset.urn, q));
+  } catch (e) {
+    view.innerHTML = `<div class="empty">搜索失败：${esc(e.message)}</div>`;
+  }
+}
+
+async function showAsset(urn, backQuery) {
+  view.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const a = await api('/api/v1/assets/' + encodeURI(urn));
+    const lineage = await api(`/api/v1/assets/${encodeURI(urn)}/lineage?direction=downstream&depth=3`);
+    const up = await api(`/api/v1/assets/${encodeURI(urn)}/lineage?direction=upstream&depth=3`);
+
+    const schema = a.aspects.datasetSchema;
+    const cols = schema?.fields ?? [];
+    const nextNodes = lineage.nodes.filter(n => n.depth === 1).map(n => n.urn);
+    const prevNodes = up.nodes.filter(n => n.depth === 1).map(n => n.urn);
+    const hasWarn = cols.length && cols.some(c => !c.description);
+
+    view.innerHTML = `
+      <div class="bar"><span class="back" id="back">← 返回搜索结果</span>${renderLag(0)}</div>
+      <section>
+        <h2>概览</h2>
+        <h3 style="margin:0 0 6px;font-size:17px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          ${esc(a.displayName || urn)}
+          <span class="badge t">${esc(a.entityType)}</span>
+          ${clsBadge(a.aspects.classification?.level)}
+          ${a.aspects.trustLevel?.level ? `<span class="badge">${esc(a.aspects.trustLevel.level)}</span>` : ''}
+        </h3>
+        <div class="urn">${esc(urn)}</div>
+        ${a.aspects.descriptions?.text ? `<div class="desc">${esc(a.aspects.descriptions.text)}</div>`
+          : `<div class="hint">⚠ 尚无描述 —— 资产页首屏必须回答"这是什么"（docs/14 §3.2）</div>`}
+        <div class="grid" style="margin-top:14px">
+          <div class="kv"><b>Owner</b>${a.aspects.ownership?.owners?.length
+            ? esc(a.aspects.ownership.owners.map(o => o.urn || o.name).join(', ')) : '— 无主资产'}</div>
+          <div class="kv"><b>分级</b>${esc(a.aspects.classification?.level || '未分级')}</div>
+          <div class="kv"><b>生命周期</b>${esc(a.aspects.lifecycle?.stage || '—')}</div>
+          <div class="kv"><b>上游 / 下游</b>${prevNodes.length} / ${nextNodes.length}</div>
+        </div>
+      </section>
+
+      <section>
+        <h2>结构（${cols.length} 列）</h2>
+        ${cols.length ? `<table><thead><tr><th>列名</th><th>类型</th><th>可空</th><th>描述</th></tr></thead><tbody>
+          ${cols.map(c => `<tr><td><code>${esc(c.name)}</code></td><td>${esc(c.type || c.nativeType || '')}</td>
+          <td>${c.nullable === false ? '否' : '是'}</td>
+          <td>${c.description ? esc(c.description) : '<span class="hint">缺失</span>'}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="hint">尚未采集结构信息。</div>'}
+        ${hasWarn ? '<div class="hint">⚠ 存在无描述的列，会影响下游对数据含义的理解。</div>' : ''}
+      </section>
+
+      <section>
+        <h2>血缘</h2>
+        <div class="meta" style="margin:0 0 8px">
+          <span>上游 1 跳：${prevNodes.length ? prevNodes.map(esc).join(' , ') : '无'}</span>
+        </div>
+        <div class="meta" style="margin:0 0 8px">
+          <span>下游 1 跳：${nextNodes.length ? nextNodes.map(esc).join(' , ') : '无'}</span>
+        </div>
+        <div class="hint">血缘边带来源与置信度：实线=运行时/人工，解析=中置信，AI 推断=低置信（docs/09 §9.2）。</div>
+      </section>
+
+      <section>
+        <h2>全部 Aspect（原始 JSON）</h2>
+        <pre>${esc(JSON.stringify(a.aspects, null, 2))}</pre>
+      </section>`;
+
+    $('#back').onclick = () => doSearch(backQuery || '');
+  } catch (e) {
+    view.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+$('#btnSearch').onclick = () => doSearch($('#q').value.trim());
+$('#q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch($('#q').value.trim()); });
+$('#btnRebuild').onclick = async () => {
+  if (!confirm('重建索引：将丢弃派生索引并从事件流重放重建。继续？')) return;
+  try {
+    const r = await api('/api/v1/index/rebuild', { method: 'POST' });
+    alert(`重建完成：处理 ${r.processed} 条事件，重建 ${r.indexed} 个文档。`);
+    doSearch($('#q').value.trim());
+  } catch (e) { alert('重建失败：' + e.message); }
+};
+
+// 令牌：初始化 + 变更时重新校验身份
+const tokenInput = $('#token');
+tokenInput.value = localStorage.getItem(TOKEN_KEY) || 'dev-admin-token';
+tokenInput.addEventListener('change', async () => {
+  localStorage.setItem(TOKEN_KEY, tokenInput.value.trim());
+  await refreshIdentity();
+  doSearch($('#q').value.trim());
+});
+
+// 初始：校验身份 + 展示全部可见资产
+(async () => { await refreshIdentity(); doSearch(''); })();
+</script>
+</body>
+</html>

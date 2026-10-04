@@ -1,0 +1,37 @@
+# ---------------------------------------------------------------------------
+# 采集调度定义（治理即代码：本文件可进 Git，用 dgctl schedule apply -f 应用）
+#
+#   dgctl schedule apply -f config/schedules.example.yaml
+#   dgctl schedule list
+#   dgctl schedule run dg-self-postgres
+#   dgctl serve --with-scheduler      # 常驻调度
+#
+# ⚠️ DSN 不落明文：用 env:VAR_NAME 引用环境变量（生产应改为 Vault/KMS 引用）。
+# ---------------------------------------------------------------------------
+schedules:
+  # 示例 1：采集本平台自己的元数据库（自举：平台自身也要被治理，docs/18 §7）
+  - name: dg-self-postgres
+    source: postgres
+    dsn: env:DG_SOURCE_DSN
+    namespace: prod
+    schemas: [public]
+    cron: "0 3 * * *"          # 每天 03:00
+    timezone: Asia/Shanghai
+    enabled: false             # 示例默认关闭，确认后再启用
+    guard:
+      maxDeletions: 200
+      maxDeleteRatio: 0.30
+      minRetentionRatio: 0.70
+
+  # 示例 2：采集一个 SQLite 分析库（演示第二个连接器与更宽松的护栏）
+  - name: analytics-sqlite
+    source: sqlite
+    dsn: env:DG_SQLITE_PATH
+    namespace: demo
+    cron: "*/30 * * * *"       # 每 30 分钟
+    timezone: Asia/Shanghai
+    enabled: false
+    guard:
+      maxDeletions: 50
+      maxDeleteRatio: 0.20
+      minRetentionRatio: 0.80

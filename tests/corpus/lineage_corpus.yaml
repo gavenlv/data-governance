@@ -1,0 +1,122 @@
+# ============================================================================
+# 列级血缘语料回归集（docs/09 §9.2 要求：「建真实 SQL 回归语料库」）
+#
+# 用途：解析器升级 / sqlglot 版本变更时，跑本集并 diff 血缘，防止静默退化。
+# 运行：python -m pytest tests/test_lineage.py -q
+#
+# 约定：
+#   expect_level  期望的 parse_level（exact / derived / table_level_only / failed）
+#   expect_edges  期望的列级边（from_table.from_column -> to_table.to_column:TRANSFORM/DEPENDENCY）
+#                 只列出关键边，未列出的边不参与断言（避免脆弱）
+#   must_not_have 绝不能出现的边（用于回归"曾经误判"的情况）
+# ============================================================================
+version: 1
+cases:
+  - name: simple-projection
+    dialect: hive
+    sql: INSERT INTO dw.t SELECT a.x AS ax, a.y AS ay FROM ods.s a
+    expect_level: exact
+    expect_edges:
+      - "ods.s.x -> dw.t.ax:DIRECT/VALUE"
+      - "ods.s.y -> dw.t.ay:DIRECT/VALUE"
+
+  - name: alias-resolution
+    dialect: hive
+    sql: |
+      INSERT INTO dw.dim_customer
+      SELECT o.customer_id AS cust_key, c.name AS cust_name
+        FROM ods.orders o
+        JOIN ods.customers c ON c.id = o.customer_id
+    expect_level: exact
+    expect_edges:
+      - "ods.orders.customer_id -> dw.dim_customer.cust_key:DIRECT/VALUE"
+      - "ods.customers.name -> dw.dim_customer.cust_name:DIRECT/VALUE"
+
+  - name: aggregation-detected
+    dialect: hive
+    sql: INSERT INTO dw.t SELECT SUM(amount) AS total FROM ods.s
+    expect_level: exact
+    expect_edges:
+      - "ods.s.amount -> dw.t.total:AGGREGATED/VALUE"
+
+  - name: masking-detected
+    dialect: hive
+    sql: INSERT INTO dw.t SELECT md5(phone) AS phone_hash FROM ods.s
+    expect_level: exact
+    expect_edges:
+      - "ods.s.phone -> dw.t.phone_hash:MASKED/VALUE"
+
+  - name: computed-is-indirect
+    dialect: trino
+    sql: INSERT INTO dw.t SELECT amount * 1.1 AS gross FROM ods.s
+    expect_level: exact
+    expect_edges:
+      - "ods.s.amount -> dw.t.gross:INDIRECT/VALUE"
+
+  - name: window-control-dependency
+    dialect: hive
+    sql: |
+      INSERT INTO dw.ranked
+      SELECT id, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn
+        FROM ods.emp
+    expect_level: exact
+    expect_edges:
+      - "ods.emp.dept -> dw.ranked.rn:FILTER/CONTROL"
+      - "ods.emp.salary -> dw.ranked.rn:FILTER/CONTROL"
+      - "ods.emp.id -> dw.ranked.id:DIRECT/VALUE"
+
+  # 回归：同一列既作普通输出又作窗口分区时，普通输出那一支必须是 VALUE
+  - name: same-column-value-and-control-not-confused
+    dialect: hive
+    sql: |
+      INSERT INTO dw.ranked
+      SELECT dept, ROW_NUMBER() OVER (PARTITION BY dept) AS rn FROM ods.emp
+    expect_level: exact
+    expect_edges:
+      - "ods.emp.dept -> dw.ranked.dept:DIRECT/VALUE"
+      - "ods.emp.dept -> dw.ranked.rn:FILTER/CONTROL"
+    must_not_have:
+      - "ods.emp.dept -> dw.ranked.dept:FILTER/CONTROL"
+
+  - name: lateral-view-cardinality
+    dialect: hive
+    sql: INSERT INTO dw.t SELECT id, item FROM src LATERAL VIEW explode(items) x AS item
+    expect_level: exact
+    expect_edges:
+      - "src.id -> dw.t.id:DIRECT/VALUE"
+      - "src.items -> dw.t.item:DIRECT/VALUE"
+
+  - name: star-is-explicitly-downgraded
+    dialect: hive
+    sql: INSERT INTO dw.t SELECT * FROM ods.s
+    expect_level: table_level_only
+
+  - name: syntax-error-fails-loudly
+    dialect: hive
+    sql: INSERT INTO dw.t SELECT FROM WHERE
+    expect_level: failed
+
+  - name: unknown-dialect-fails-loudly
+    dialect: klingon
+    sql: SELECT 1
+    expect_level: failed
+
+  - name: bigquery-backticks
+    dialect: bigquery
+    sql: "INSERT INTO `p.d.t` SELECT x AS a FROM `p.d.s`"
+    expect_level: exact
+    expect_edges:
+      - "d.s.x -> d.t.a:DIRECT/VALUE"
+
+  - name: postgres-plain
+    dialect: postgres
+    sql: INSERT INTO dw.t SELECT x AS a FROM public.s
+    expect_level: exact
+
+  - name: cte-resolved-to-physical-table
+    dialect: hive
+    sql: |
+      INSERT INTO dw.t
+      WITH base AS (SELECT id, amount FROM ods.raw)
+      SELECT id, amount FROM base
+    expect_level: exact

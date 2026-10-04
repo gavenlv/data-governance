@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.datagovernance</groupId>
+        <artifactId>dg-parent</artifactId>
+        <version>0.1.0</version>
+    </parent>
+
+    <artifactId>dg-ingestion</artifactId>
+    <name>dg-ingestion</name>
+    <description>采集框架与连接器：Source→Normalizer→Sink + 护栏 + 调度（docs/09 §9.1）</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+        <!--
+          MongoDB 官方同步驱动：MongoDB 无 schema，采集端必须自己推断（采样 + 类型并集），
+          因此需要驱动提供的游标与 BSON 类型信息。这是本模块唯一新增的第三方依赖。
+        -->
+        <dependency>
+            <groupId>org.mongodb</groupId>
+            <artifactId>mongodb-driver-sync</artifactId>
+            <version>${mongodb-driver.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,60 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  background: #f5f7fa;
+}
+
+.dg-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-inline: 16px;
+  background: #fff;
+  border-bottom: 1px solid #eaeef5;
+}
+
+.dg-header-title {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dg-header-spacer {
+  flex: 1;
+}
+
+.dg-content {
+  padding: 16px 20px 32px;
+}
+
+.dg-urn {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  color: #6b778c;
+  word-break: break-all;
+}
+
+.dg-mono {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+
+.dg-page-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.dg-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}

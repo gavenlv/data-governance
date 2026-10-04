@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# 通用数据治理平台 —— 单机部署（docs/07 §4「单机版 / Dev」）
+#
+#   docker compose up -d
+#   UI:  http://127.0.0.1:8080/
+#   API: http://127.0.0.1:8080/docs
+#
+# 说明：
+#   - 真相源是 PostgreSQL（ADR-001）；平台自身不存储业务数据（控制面/数据面分离）
+#   - 首次启动会自动执行 `dgctl init` 建表（幂等）
+#   - 生产形态（Kafka/OpenSearch/多副本）见 docs/07 §4 的"标准版"，本文件是 Dev 形态
+# ---------------------------------------------------------------------------
+name: dg-platform
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dg-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dg_local_password}
+      POSTGRES_DB: ${POSTGRES_DB:-dg}
+      # 中文检索需要分词扩展时，可换用带 zhparser/pg_jieba 的镜像（见 docs/21 §4 限制 2）
+    ports:
+      - "${POSTGRES_PORT:-25432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dg} -d ${POSTGRES_DB:-dg}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dg-platform:${DG_VERSION:-0.1.0}
+    container_name: dg-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DG_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-dg}:${POSTGRES_PASSWORD:-dg_local_password}@postgres:5432/${POSTGRES_DB:-dg}
+      DG_NAMESPACE: ${DG_NAMESPACE:-prod}
+      DG_TENANT: ${DG_TENANT:-default}
+      # 认证：静态令牌（开发）或 jwt（对接企业 OIDC）
+      DG_AUTH_MODE: ${DG_AUTH_MODE:-static}
+      DG_AUTH_TOKENS: ${DG_AUTH_TOKENS:-}
+      DG_JWT_SECRET: ${DG_JWT_SECRET:-}
+      DG_JWT_ALGORITHM: ${DG_JWT_ALGORITHM:-HS256}
+      DG_API_HOST: 0.0.0.0
+      DG_API_PORT: "8080"
+    ports:
+      - "${DG_API_PORT:-8080}:8080"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

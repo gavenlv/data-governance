@@ -1,0 +1,164 @@
+# ============================================================================
+# Aspect 类型定义（Model Registry 输入）
+# 设计依据：docs/08-metadata-model.md §4
+#
+# sourceTracked: true 表示该 aspect 的字段参与"字段级来源优先级"判定
+#   （ADR-005 / 08 §5）：MANUAL > IMPORTED > AUTO_COLLECTED
+#   采集不得覆盖人工内容 —— 这是企业客户投诉最多的问题
+# ============================================================================
+apiVersion: dg.model/v1
+kind: AspectTypes
+
+aspectTypes:
+  - name: descriptions
+    displayName: 描述
+    sourceTracked: true
+    properties:
+      - {name: text,     type: string, required: true}
+      - {name: language, type: string, default: zh}
+      - {name: source,   type: enum, values: [MANUAL, IMPORTED, AI_GENERATED, AUTO_COLLECTED], default: MANUAL}
+
+  - name: tags
+    displayName: 标签
+    sourceTracked: true
+    properties:
+      - {name: tags, type: array, itemsType: string}
+
+  - name: ownership
+    displayName: 所有权
+    sourceTracked: true
+    properties:
+      # owners: [{type: USER|TEAM, urn, role, since}]
+      # role ∈ BUSINESS_OWNER|TECHNICAL_OWNER|DATA_STEWARD|PRODUCER|CONSUMER（对齐 DataHub/OpenMetadata）
+      - {name: owners, type: array, itemsType: object}
+
+  - name: datasetSchema
+    displayName: 结构
+    sourceTracked: false          # 结构以采集为准，人工仅可补充描述
+    properties:
+      - {name: fields,        type: array, itemsType: object}
+      - {name: primaryKey,    type: array, itemsType: string}
+      - {name: partitionKeys, type: array, itemsType: object}
+      - {name: schemaHash,    type: string}   # 契约兼容性与变更触发的基础
+      - {name: rawTypeSystem, type: string}
+
+  - name: classification
+    displayName: 分类分级
+    sourceTracked: true
+    properties:
+      - {name: level,      type: enum, values: [L1, L2, L3, L4], default: L2}
+      - {name: categories, type: array, itemsType: string}
+      - {name: piiTypes,   type: array, itemsType: string}
+      # appliedBy: {kind: AUTO|MANUAL, detector, confidence}
+      - {name: appliedBy,  type: object}
+      # propagation: {fromUpstream: bool, inheritedFrom: urn}
+      - {name: propagation, type: object}
+      - {name: reviewedBy, type: string}
+
+  - name: lifecycle
+    displayName: 生命周期
+    sourceTracked: false
+    properties:
+      - {name: stage,           type: enum, values: [DRAFT, PRODUCTION, DEPRECATED, ARCHIVED], default: PRODUCTION}
+      - {name: deprecationNote, type: string}
+      - {name: replacedBy,      type: string}
+
+  - name: trustLevel
+    displayName: 可信状态
+    description: 用户最先想知道"这数据能不能信"——展示优先级高于描述完整度（借鉴 Alation Trust Flags）
+    sourceTracked: true
+    properties:
+      - {name: level,       type: enum, values: [CERTIFIED, WARNING, DEPRECATED, UNVERIFIED], default: UNVERIFIED}
+      - {name: certifiedBy, type: string}
+      - {name: certifiedAt, type: string}
+      - {name: reason,      type: string}
+
+  - name: columnProfile
+    displayName: 列画像（时序类）
+    sourceTracked: false
+    timeSeries: true
+    properties:
+      - {name: rowCount,     type: integer}
+      - {name: nullRatio,    type: number}
+      - {name: distinctCount, type: integer}
+      - {name: minValue,     type: string}
+      - {name: maxValue,     type: string}
+      - {name: sampledAt,    type: string}
+      # 必须标注精度来源：MySQL TABLE_ROWS / Oracle NUM_ROWS 等均为估算值（research/04 补充 26）
+      - {name: precision,    type: enum, values: [ESTIMATED, EXACT], default: ESTIMATED}
+      - {name: precisionSource, type: string}
+
+  # ---------------------------------------------------------------------------
+  # Batch 2 新增：契约与质量规则。
+  # 注意：新增 aspect / 实体类型**不需要改动核心代码** ——
+  # MetadataService 与 ModelRegistry 都按 YAML 驱动，这正是 docs/11 Phase 0 的
+  # Go/No-Go 判据「后续新增 aspect 不改核心代码」的实证。
+  # ---------------------------------------------------------------------------
+  - name: contractSpec
+    displayName: 契约定义（ODCS 兼容）
+    description: 契约是"可执行的接口"而不是文档：schema 段与 quality 段都可被编译成断言执行
+    sourceTracked: false
+    properties:
+      - {name: apiVersion,     type: string, required: true}
+      - {name: kind,           type: string, default: DataContract}
+      # apiVersion 与 version 必须分开治理：前者是 ODCS 规范版本，后者是契约自身的语义化版本
+      - {name: contractVersion, type: string, required: true}
+      - {name: status,         type: enum, values: [DRAFT, PROPOSED, ACTIVE, DEPRECATED, RETIRED], default: DRAFT}
+      - {name: compatibility,  type: enum, values: [BACKWARD, FORWARD, FULL, NONE], default: BACKWARD}
+      - {name: schema,         type: object}
+      # 主键契约：改主键属于破坏性变更（下游去重与关联逻辑会失效），因此必须显式声明
+      - {name: primaryKey,     type: array, itemsType: string}
+      - {name: quality,        type: array, itemsType: object}
+      - {name: sla,            type: object}
+      - {name: semantic,       type: object}
+      - {name: access,         type: object}
+      - {name: examples,       type: array, itemsType: object}
+      - {name: domain,         type: string}
+
+  - name: ruleSpec
+    displayName: 质量规则定义（统一 IR）
+    description: 三种前端语法（YAML / SQL 断言 / dbt tests）都编译到本 IR，再由编译器生成引擎 SQL
+    sourceTracked: true
+    properties:
+      - {name: ruleId,     type: string, required: true}
+      # 说明：docs/09 §9.4 的 IR 指标清单之外，本实现额外区分了「计数」与「比率」
+      # （null_ratio / duplicate_ratio）。原因：`uniqueness threshold: 0.999` 这样的
+      # 阈值是**比率**，把比率塞进计数型指标会产生"语义看起来对、判定实际错"的规则。
+      - {name: metric,     type: enum, required: true, values: [null_count, null_ratio, missing_count, distinct_count, duplicate_count, duplicate_ratio, row_count, freshness_seconds, percentile, pattern_match_rate, custom_sql]}
+      - {name: operator,   type: enum, values: ["=", "!=", ">", ">=", "<", "<=", between, in], default: "="}
+      - {name: threshold,  type: number}
+      - {name: thresholdMax, type: number}
+      - {name: column,     type: string}
+      - {name: columns,    type: array, itemsType: string}
+      - {name: window,     type: string}
+      - {name: percentile, type: number}
+      - {name: pattern,    type: string}
+      - {name: acceptedValues, type: array, itemsType: string}
+      - {name: customSql,  type: string}
+      - {name: expected,   type: string}
+      - {name: severity,   type: enum, values: [INFO, LOW, MEDIUM, HIGH, CRITICAL], default: MEDIUM}
+      - {name: dimension,  type: enum, values: [completeness, accuracy, consistency, timeliness, uniqueness, validity], default: validity}
+      - {name: onFail,     type: enum, values: [BLOCK, ALERT, RECORD], default: ALERT}
+      - {name: schedule,   type: object}
+      - {name: engineHints, type: object}
+      - {name: sourceFrontend, type: enum, values: [yaml, sql_assertion, dbt_test], default: yaml}
+
+  # ---------------------------------------------------------------------------
+  # Batch 3 新增：BI 资产（Dashboard）。来源是 Superset 这类 BI 平台的 REST API。
+  # 为什么单独立 aspect 而不是塞进 properties：仪表板要能被检索、被血缘引用
+  # （Dashboard → 表 的 readsFrom 边），这些能力都由 aspect 机制免费提供。
+  # ---------------------------------------------------------------------------
+  - name: dashboardSpec
+    displayName: 仪表板规格（BI 平台）
+    description: 记录仪表板的外部 ID、图表清单、依赖的数据集与刷新时间，用于「报表挂了能找到它的表」
+    sourceTracked: true
+    properties:
+      - {name: externalId,      type: string, required: true}
+      - {name: specSource,      type: enum, values: [superset, tableau, metabase, powerbi, other], default: superset}
+      - {name: url,             type: string}
+      - {name: chartCount,      type: integer}
+      - {name: charts,          type: array, itemsType: object}
+      - {name: datasetUrns,     type: array, itemsType: string}
+      - {name: published,       type: boolean}
+      - {name: certified,       type: boolean}
+      - {name: lastRefreshedAt, type: string}

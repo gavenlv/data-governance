@@ -1,0 +1,22 @@
+-- 策略产物 bundle
+-- target: trino
+-- generatedAt: 2026-10-04T14:39:50.738646800Z
+-- 执行层说明：本 bundle 由治理平台编译产出，实际执行件为现成的
+--   Trino SystemAccessControl / Ranger / 数仓原生策略（平台不自研执行引擎）
+
+-- === region_row_filter v1 ===
+-- 策略：region_row_filter（v1）
+-- 目标：Trino SystemAccessControl / ConnectorAccessControl
+-- 资源：{"prefixes":["urn:dg:Dataset:java_e2e."],"classification":["L2","L3","L4"]}
+-- 主体：{"roles":["ANALYST_CN"]}
+-- 行过滤谓词（注入查询 WHERE）：
+region = 'CN'
+
+-- === mask_id_card v1 ===
+-- 策略：mask_id_card（v1）
+-- 目标：Trino SystemAccessControl / ConnectorAccessControl
+-- 资源：{"prefixes":["urn:dg:Dataset:java_e2e."]}
+-- 主体：{"roles":["SUPPORT"]}
+-- 列掩码（列 urn）：
+to_hex(sha256(to_utf8(CAST(urn AS VARCHAR))))
+

@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.datagovernance</groupId>
+        <artifactId>dg-parent</artifactId>
+        <version>0.1.0</version>
+    </parent>
+
+    <artifactId>dg-api</artifactId>
+    <name>dg-api</name>
+    <description>REST API 与装配（Spring Boot 应用入口）</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-model</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-ingestion</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-lineage</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-quality</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-policy</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-ai</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>com.datagovernance.api.DataGovernanceApplication</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

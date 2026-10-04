@@ -1,0 +1,51 @@
+# 示例契约（ODCS 兼容）——供 CI 门禁与契约注册使用
+#
+#   python tools/ci/contract_gate.py --contract contracts/example_event_log.yaml --namespace java_e2e
+#   curl -X POST .../api/v1/contracts -d @<(python -c "import yaml,json,sys;print(json.dumps({'document':yaml.safe_load(open('contracts/example_event_log.yaml'))}))")
+#
+# 关键点：
+#   - apiVersion（ODCS 规范版本）与 version（契约自身语义化版本）**分开治理**；
+#   - schema 段是可执行的：删列 / 收窄类型 / 可选改必填 / 改语义 / 改主键都会被判为破坏性，
+#     并要求版本号如实升级（版本号骗人时 CI 会拦住）；
+#   - quality 段会被编译成质量规则落库（契约与质量子系统在这里交汇）。
+apiVersion: v3.0.2
+kind: DataContract
+id: event_log_contract
+version: 1.0.0
+status: ACTIVE
+dataset: urn:dg:Dataset:java_e2e.postgresql.dg.public.event_log
+compatibility: BACKWARD
+
+primaryKey: [seq]
+
+schema:
+  - name: seq
+    type: bigint
+    required: true
+    description: 事件序号（主键）
+  - name: event_type
+    type: text
+    required: true
+    description: 事件类型
+  - name: urn
+    type: text
+    required: true
+    description: 事件关联的实体 URN
+  - name: created_at
+    type: timestamp with time zone
+    required: true
+    description: 事件产生时间
+
+quality:
+  - type: notNull
+    column: event_type
+  - type: uniqueness
+    columns: [seq]
+    threshold: 0.999
+
+sla:
+  freshness: PT24H
+
+# 执行目标：规则与校验在源库上执行（支持 env:VAR 引用，不落明文）
+connection:
+  dsn: env:DG_SOURCE_DSN

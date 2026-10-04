@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  通用数据治理平台 · 控制面（Java 21 + Spring Boot）
+
+  模块划分对齐 docs/10-tech-stack.md §8 的仓库结构：
+    dg-model      模型注册表（YAML 定义 → 校验 / 兼容性检查 / 生成类型）
+    dg-core       元数据内核（真相源 / 版本 / 审计 / outbox 事件 / 派生视图）
+    dg-ingestion  采集框架与连接器
+    dg-lineage    血缘（SQL 解析侧车接入 + OpenLineage）
+    dg-quality    数据质量与可观测性            ← 骨架，未实现（见 @Unimplemented）
+    dg-policy     访问治理与策略                ← 骨架，未实现
+    dg-ai         AI 原生能力                   ← 骨架，未实现
+    dg-api        REST API 与装配（Spring Boot 应用）
+    dg-sdk        客户端 SDK                    ← 骨架，未实现
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.1.0</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.datagovernance</groupId>
+    <artifactId>dg-parent</artifactId>
+    <version>0.1.0</version>
+    <packaging>pom</packaging>
+    <name>Data Governance Platform</name>
+    <description>通用数据治理平台 · 控制面（Java 21 + Spring Boot 3）</description>
+
+    <modules>
+        <module>dg-model</module>
+        <module>dg-core</module>
+        <module>dg-ingestion</module>
+        <module>dg-lineage</module>
+        <module>dg-quality</module>
+        <module>dg-policy</module>
+        <module>dg-ai</module>
+        <module>dg-api</module>
+        <module>dg-sdk</module>
+    </modules>
+
+    <properties>
+        <java.version>21</java.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <springdoc.version>2.2.0</springdoc.version>
+        <jjwt.version>0.11.5</jjwt.version>
+        <mongodb-driver.version>4.11.1</mongodb-driver.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.datagovernance</groupId>
+                <artifactId>dg-model</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.datagovernance</groupId>
+                <artifactId>dg-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.datagovernance</groupId>
+                <artifactId>dg-ingestion</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.datagovernance</groupId>
+                <artifactId>dg-lineage</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.datagovernance</groupId>
+                <artifactId>dg-quality</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.datagovernance</groupId>
+                <artifactId>dg-policy</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.datagovernance</groupId>
+                <artifactId>dg-ai</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.datagovernance</groupId>
+                <artifactId>dg-sdk</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-api</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-impl</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-jackson</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <configuration>
+                        <compilerArgs>
+                            <arg>-parameters</arg>
+                        </compilerArgs>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

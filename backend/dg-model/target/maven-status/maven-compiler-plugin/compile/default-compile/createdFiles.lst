@@ -1,0 +1,10 @@
+com\datagovernance\model\CapabilityStatus.class
+com\datagovernance\model\PropertyDef.class
+com\datagovernance\model\CapabilityDescriptor.class
+com\datagovernance\model\ModelException.class
+com\datagovernance\model\Unimplemented.class
+com\datagovernance\model\CapabilityProvider.class
+com\datagovernance\model\EntityTypeDef.class
+com\datagovernance\model\ModelRegistry.class
+com\datagovernance\model\AspectTypeDef.class
+com\datagovernance\model\RelationshipTypeDef.class
