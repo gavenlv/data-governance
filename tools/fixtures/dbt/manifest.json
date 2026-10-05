@@ -1,0 +1,84 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json",
+    "dbt_version": "1.9.0",
+    "project_name": "dg_demo",
+    "adapter_type": "postgres",
+    "generated_at": "2026-10-05T02:00:00Z"
+  },
+  "nodes": {
+    "model.dg_demo.stg_event_log": {
+      "unique_id": "model.dg_demo.stg_event_log",
+      "resource_type": "model",
+      "name": "stg_event_log",
+      "alias": "alert_event",
+      "database": "dg",
+      "schema": "public",
+      "package_name": "dg_demo",
+      "original_file_path": "models/staging/stg_event_log.sql",
+      "description": "事件日志的清洗层：只保留可分析字段",
+      "tags": ["staging", "pii"],
+      "config": {"materialized": "view"},
+      "columns": {
+        "seq": {"name": "seq", "data_type": "bigint", "description": "事件序号"},
+        "event_type": {"name": "event_type", "data_type": "text", "description": "事件类型"}
+      },
+      "depends_on": {"nodes": ["source:dg_demo.raw.event_log"]}
+    },
+    "model.dg_demo.collector_rollup": {
+      "unique_id": "model.dg_demo.collector_rollup",
+      "resource_type": "model",
+      "name": "collector_rollup",
+      "alias": "collector_state",
+      "database": "dg",
+      "schema": "public",
+      "package_name": "dg_demo",
+      "original_file_path": "models/marts/collector_rollup.sql",
+      "description": "采集器状态聚合",
+      "tags": ["mart"],
+      "config": {"materialized": "table"},
+      "columns": {
+        "source": {"name": "source", "data_type": "text", "description": "采集器名"}
+      },
+      "depends_on": {"nodes": ["model.dg_demo.stg_event_log", "model.dg_demo.missing_model"]}
+    },
+    "test.dg_demo.not_null_seq": {
+      "unique_id": "test.dg_demo.not_null_seq",
+      "resource_type": "test",
+      "name": "not_null_seq",
+      "database": "dg",
+      "schema": "public",
+      "package_name": "dg_demo",
+      "depends_on": {"nodes": ["model.dg_demo.stg_event_log"]}
+    }
+  },
+  "sources": {
+    "source.dg_demo.raw.event_log": {
+      "unique_id": "source.dg_demo.raw.event_log",
+      "resource_type": "source",
+      "name": "event_log",
+      "identifier": "event_log",
+      "database": "dg",
+      "schema": "public",
+      "package_name": "dg_demo",
+      "original_file_path": "models/staging/sources.yml",
+      "description": "平台自身的元数据事件表",
+      "columns": {
+        "seq": {"name": "seq", "data_type": "bigint", "description": "事件序号"}
+      },
+      "depends_on": {"nodes": []}
+    },
+    "source.dg_demo.raw.unknown_table": {
+      "unique_id": "source.dg_demo.raw.unknown_table",
+      "resource_type": "source",
+      "name": "unknown_table",
+      "identifier": "unknown_table",
+      "database": "dg",
+      "schema": "public",
+      "package_name": "dg_demo",
+      "description": "平台里并不存在的表（用于验证「解析不到就不建边」）",
+      "columns": {},
+      "depends_on": {"nodes": []}
+    }
+  }
+}

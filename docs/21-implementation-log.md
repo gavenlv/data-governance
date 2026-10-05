@@ -1237,4 +1237,87 @@ cd web && pnpm build            → 通过
    与 `ingestion.connectors-more`、`policy.compiler` 的 BI 下发一起构成下一批的内容。
 
 
+## 20. Batch 7：dbt 连接器（把「最准的血缘」接进来）
+
+`lineage.sql-parse` 的缺口清单里有一句："BI 工具内嵌 SQL 的自动提取（需各 BI 连接器）"；
+`ingestion.connectors-more` 的缺口清单里有 "dbt manifest"。本批做 dbt，
+因为它是**唯一一个不依赖 SQL 解析就能拿到精确血缘**的源。
+
+### 20.1 交付与状态变化
+
+| 能力 | 原状态 | 现状态 | 落地内容 |
+|---|---|---|---|
+| `ingestion.connectors-more` | 🟡 部分（5 个连接器） | 🟡 部分（**6 个**） | 新增 **dbt**：读 `target/manifest.json` → model/seed/snapshot/source 成为数据集资产（列、描述、物化方式、tags、路径）→ **编译期确定的血缘**（`depends_on`，置信度 1.0）+「模型 → 物化的物理表」边 |
+| 采集框架 | — | 扩展 | `Source.extractEdges()` + `RawModels.RawEdge`：连接器可以**自带血缘**；`CollectionService` 统一落库并记录 `edgesWritten` / `edgeSkipNotes`（`sql/014_collect_edges.sql`） |
+
+计数不变：**已实现 34 / 部分 7 / 未实现 1 / 合计 42**（本批是"部分实现的能力往前推进"，不是新增能力）。
+
+### 20.2 四条设计决定
+
+1. **dbt 模型建为独立资产，不合并进物理表。**
+   这是本批最重要的一个决定，也是**在写代码前改掉的**：manifest 的 `columns` 通常只包含
+   **被文档化过的列**，拿它去覆盖从数据库采集的真实 schema 是**降级**；
+   而且 dbt 模型有自己的 owner、描述、物化方式与测试，合并进物理表会让这些信息无处安放。
+   因此：`platform=dbt`、URN 里带项目名；source 声明则**优先解析到已采集的物理表**
+   （这正是 source 的意义），解析不到才建 dbt 侧资产。
+
+2. **血缘由连接器交出来，而不是所有源都去猜。**
+   dbt 的 `depends_on` 是编译期事实，比事后解析 SQL 准得多（不受方言、宏、动态 SQL 影响）。
+   为此在采集框架上加了一条通用能力：连接器可以产出边，落库与护栏仍由 `CollectionService` 统一处理。
+   方向仍是全局约定 `上游 → 下游`，于是 dbt 链路读起来就是真实链路：
+   `源表 → dbt 模型 → 物化的物理表 → 下一个 dbt 模型 → …`。
+
+3. **解析不到的依赖要记账，不要静默。**
+   夹具里故意放了一个平台不存在的 `unknown_table` 和一个不存在的 `missing_model`：
+   前者不建边（不猜），后者进 `edgeSkipNotes`（"有 N 条依赖未解析到平台资产，这些边没有写入"）。
+   运行记录里同时新增 `edgesWritten` 与 `edgeSkipNotes` 两列 —— 血缘也是采集产出，必须可观测。
+
+4. **被护栏拦截的那一轮不写边。**
+   否则会出现"目录没更新、血缘却变了"，两边对不上。
+
+### 20.3 验证（可复现）
+
+```
+python tools/java_e2e_verify.py → 147/147 通过（Batch 6 的 139 项 + 本批 8 项）
+  38a. dbt 连接器已登记且状态可见（不再是「计划中」，notImplemented 里也没有它）
+  38b. 采集 manifest：3 个 dbt 资产 + 4 条血缘边 + 1 条跳过说明（第二次采集新建 1，幂等）
+  38c. 解析不到的依赖跳过并记账（宁可缺边也不猜，但不能静默）
+  38d. dbt 模型是独立资产（platform=dbt），带列与描述，不去覆盖物理表 schema
+  38e. source 解析到已采集的物理表 → dbt 链路与物理血缘接得上（上游出现 event_log）
+  38f. 「模型 → 物化的物理表」边存在（下游出现 alert_event / collector_state）
+  38g. 血缘带来源与置信度（source=dbt_manifest、confidence=1.0、parseLevel=exact）
+  38h. manifest 不存在时给出可操作的错误（400 + "先执行 dbt compile"）
+
+mvn -B -o test                  → 150 项 Java 单测全绿（本批 +5：dbt 连接器纯逻辑 5 项）
+python tools/ui_render_check.py → 10/10 标签页渲染通过
+python -m pytest -q             → 250 项全绿
+python tools/dependency_audit.py → 0 条已知漏洞（退出码 0）
+cd web && pnpm build            → 通过
+```
+
+夹具：`tools/fixtures/dbt/manifest.json`（真实形态的 manifest：2 个模型 + 1 个测试 + 2 个 source，
+其中一个 source 与一个上游依赖故意解析不到）。
+
+### 20.4 本批修掉的真实缺陷
+
+| # | 缺陷 | 后果 | 修正 |
+|---|---|---|---|
+| 1 | DSN `dbt:///D:/path` 解析出 `/D:/path` | `Path.of` 抛 `Illegal char <:>` —— 使用者完全看不出是自己写错了 DSN | 去掉 URL 形态路径在 Windows 上的前导斜杠 + URL 解码；新增单测 |
+| 2 | **source 的键形式不一致**：manifest 的 `sources` 键用点号，`depends_on` 引用用冒号 | source 的上游边**全部解析不到**并被当成"跳过" —— 看起来像"没有血缘"，实际是键对不上 | 两种形式都登记（`registerUrn` 同时写 `source.a.b.c` 与 `source:a.b.c`），并在注释里说明为什么 |
+| 3 | **自我引用的解析闭环**：dbt 第一轮建的 `unknown_table` 资产，第二轮被物理表解析器当成 source 的物理表 | 第二轮资产数从 3 掉到 2，血缘指向了连接器**自己产出的影子资产** | `resolveDatasetUrn(..., excludePlatform)`：解析物理表时排除连接器自身平台的资产（Superset 同样适用） |
+| 4 | 测试夹具路径写死 `../tools/...` | Maven 从模块目录跑测试 → 找不到夹具，报错**看起来像"连接器坏了"** | 向上查找夹具目录（`locateFixture`），并说明为什么不写死相对层级 |
+| 5 | 初版把 dbt 模型合并进物理表 | 会用 manifest 的**部分列**覆盖真实 schema（降级） | 改为独立资产（见 §20.2 第 1 条）——这条是设计评审阶段改掉的，记在这里是因为它本可以成为一个很难发现的线上问题 |
+
+### 20.5 本批之后仍然未做（诚实清单）
+
+1. **dbt 的列级血缘未做**：manifest 只给表级依赖；
+   列级要把 `compiled_code` 交给 sqlglot 侧车（`POST /api/v1/lineage/parse` 已可用，但**没有做成批处理入口**）；
+2. **未采集 dbt 的 tests / exposures / metrics**：tests 可以映射成质量规则、exposures 可以映射成 BI 资产、
+   metrics 可接入语义层 —— 都是有价值但需要单独建模的部分，本轮没做；
+3. **连接器缺口仍在**：MySQL / Trino / Hive-HMS / Airflow / SQLite / DuckDB / Tableau；
+4. `ai.semantic-search` 向量路、`core.search-chinese` 词典分词、`lineage.sql-parse` 的 L2 校验层、
+   `lineage.visualization` 的时间轴回放/聚合视图/列级路径、`policy.compiler` 的 BI 实际下发、
+   `core.index-opensearch` 均未动 —— 留给后续批次。
+
+
 

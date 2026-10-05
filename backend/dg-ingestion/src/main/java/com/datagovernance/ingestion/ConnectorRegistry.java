@@ -122,11 +122,12 @@ public class ConnectorRegistry {
             case "mongodb", "mongo" -> MongoSource.fromDsn(dsn, databases, tables, request.sampleSize());
             case "bigquery", "bq" -> BigQuerySource.fromDsn(dsn, databases, tables);
             case "superset" -> SupersetSource.fromDsn(dsn, request.namespace(),
-                    (schema, table) -> resolveDatasetUrn(schema, table, request.namespace()), tables);
+                    (schema, table) -> resolveDatasetUrn(schema, table, request.namespace(), "superset"), tables);
             case "dbt" -> DbtManifestSource.fromDsn(dsn, request.namespace(),
-                    // 与 Superset 共用同一套解析规则（表名 → 平台 URN）：
-                    // 两个连接器用两套规则，会导致"同一张表在 BI 血缘里认得、在 dbt 血缘里认不得"
-                    (database, schema, table) -> resolveDatasetUrn(schema, table, request.namespace()),
+                    // 与 Superset 共用同一套解析规则（表名 → 平台 URN）；
+                    // 但要**排除 dbt 自己的资产**：否则第二次采集时，上一轮建的 dbt 侧资产
+                    // 会被当成本次 source 的"物理表"解析出来，形成自我引用的闭环
+                    (database, schema, table) -> resolveDatasetUrn(schema, table, request.namespace(), "dbt"),
                     tables);
             default -> throw new IllegalArgumentException("不支持的 source：" + source
                     + "（已实现：" + implemented().stream().map(item -> item.get("id")).toList() + "）");
@@ -134,7 +135,7 @@ public class ConnectorRegistry {
     }
 
     /**
-     * 把 Superset 的 {@code schema.table} 解析为平台内的 Dataset URN。
+     * 把外部系统的 {@code schema.table} 解析为平台内的 Dataset URN。
      *
      * <p>解析顺序（**只在唯一命中时返回**，否则返回 null —— 报表血缘宁可缺边也不猜错）：
      * <ol>
@@ -142,18 +143,31 @@ public class ConnectorRegistry {
      *       被两个域各采一次），此时"全库唯一"会直接退化成歧义；</li>
      *   <li>本命名空间内没有，再退回全库唯一匹配。</li>
      * </ol>
+     *
+     * <p><b>排除自身平台的资产</b>（{@code excludePlatform}）：这是被实测打出来的修正 ——
+     * dbt 连接器第一轮会把解析不到物理表的 source 建成 dbt 侧资产，
+     * 第二轮再解析时那个资产的 URN 恰好以 {@code .schema.table} 结尾，
+     * 于是"source 找到了自己的影子"，血缘变成自我引用、资产数还少了一个。
+     * 解析"物理表"时必须排除连接器自己产出的资产。
      */
-    private String resolveDatasetUrn(String schema, String tableName, String namespace) {
+    private String resolveDatasetUrn(String schema, String tableName, String namespace,
+                                     String excludePlatform) {
         if (tableName == null || tableName.isBlank()) {
             return null;
         }
         String suffix = (schema == null || schema.isBlank() ? "" : schema + ".") + tableName;
+        // URN 形状：urn:dg:Dataset:<namespace>.<platform>.<database>.<schema>.<table>
+        // 因此按 '.' 切分后第 2 段就是 platform
+        String exclusion = excludePlatform == null ? "" : " AND split_part(urn, '.', 2) <> ?";
         if (namespace != null && !namespace.isBlank()) {
             List<String> scoped = jdbc.queryForList("""
                     SELECT urn FROM entity
                      WHERE entity_type = 'Dataset' AND deleted_at IS NULL
                        AND namespace = ? AND urn LIKE ?
-                    """, String.class, namespace, "%." + suffix);
+                    """ + exclusion, String.class,
+                    excludePlatform == null
+                            ? new Object[]{namespace, "%." + suffix}
+                            : new Object[]{namespace, "%." + suffix, excludePlatform});
             if (scoped.size() == 1) {
                 return scoped.get(0);
             }
@@ -165,7 +179,10 @@ public class ConnectorRegistry {
         List<String> rows = jdbc.queryForList("""
                 SELECT urn FROM entity
                  WHERE entity_type = 'Dataset' AND deleted_at IS NULL AND urn LIKE ?
-                """, String.class, "%." + suffix);
+                """ + exclusion, String.class,
+                excludePlatform == null
+                        ? new Object[]{"%." + suffix}
+                        : new Object[]{"%." + suffix, excludePlatform});
         return rows.size() == 1 ? rows.get(0) : null;
     }
 }

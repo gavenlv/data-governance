@@ -383,6 +383,15 @@ function CollectTab() {
                 value: item.id,
                 label: `${item.displayName}${item.verifiedAgainstRealSystem ? '' : '（未对真实系统验证）'}`,
               }))}
+              // 选中源就把该连接器的 DSN 示例填进 DSN 输入框：6 个连接器的 DSN 形态各不相同
+              // （jdbc:// / clickhouse:// / mongodb:// / bigquery:// / superset:// / dbt:///path），
+              // 让人去下面表格里抄是没必要的摩擦
+              onChange={(value: string) => {
+                const picked = implemented.find((item) => item.id === value)
+                if (picked?.dsnExample) {
+                  form.setFieldValue('dsn', picked.dsnExample)
+                }
+              }}
             />
           </Form.Item>
           <Form.Item name="dsn" label="DSN" rules={[{ required: true }]}>

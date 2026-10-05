@@ -1782,6 +1782,73 @@ models:
               f"GitLab 模板 job {sorted(k for k in gitlab_doc if not k.startswith('.'))}；"
               f"仓库 CI job {sorted(workflow_doc.get('jobs', {}))}")
 
+    # ------------------------------------------- 38) dbt manifest 连接器（编译期血缘）
+    status, sources = call("GET", "/api/v1/collect/sources")
+    dbt_info = next((item for item in sources.get("implemented", []) if item.get("id") == "dbt"), {})
+    check("38a. dbt 连接器已登记且状态可见（不再是「计划中」）",
+          status == 200 and bool(dbt_info) and "manifest" in str(dbt_info.get("note"))
+          and "dbt" not in (sources.get("notImplemented") or {}),
+          f"dsn 形态：{dbt_info.get('dsnExample')}")
+
+    manifest_path = REPO_ROOT / "tools" / "fixtures" / "dbt" / "manifest.json"
+    status, dbt_run = call("POST", "/api/v1/collect/run", {
+        "source": "dbt", "dsn": "dbt:///" + str(manifest_path).replace("\\", "/"),
+        "namespace": NAMESPACE})
+    check("38b. 采集 manifest：产出 dbt 资产 + 编译期血缘边，并回报跳过的边",
+          status == 200 and dbt_run.get("status") == "SUCCEEDED"
+          and dbt_run.get("datasetsSeen", 0) >= 3 and dbt_run.get("edgesWritten", 0) >= 3,
+          f"资产 {dbt_run.get('datasetsSeen')} 个（新建 {dbt_run.get('datasetsCreated')}）、"
+          f"血缘边 {dbt_run.get('edgesWritten')} 条、跳过说明 {len(dbt_run.get('edgeSkipNotes', []))} 条")
+
+    skipped = dbt_run.get("edgeSkipNotes") or []
+    check("38c. 解析不到的依赖**跳过并记账**（宁可缺边也不猜，但不能静默）",
+          bool(skipped) and any("未解析" in str(note) for note in skipped),
+          str(skipped[0])[:76] if skipped else "没有跳过说明（说明夹具里的缺失依赖没被检出）")
+
+    dbt_model_urn = f"urn:dg:Dataset:{NAMESPACE}.dbt.dg_demo.public.stg_event_log"
+    status, model_detail = call("GET", f"/api/v1/assets/{urllib.parse.quote(dbt_model_urn, safe='')}")
+    schema_aspect = (model_detail.get("aspects", {}) or {}).get("datasetSchema") if isinstance(model_detail, dict) else None
+    fields = (schema_aspect or {}).get("fields") or []
+    check("38d. dbt 模型是**独立资产**（platform=dbt），带列与描述，不去覆盖物理表 schema",
+          status == 200 and model_detail.get("entityType") == "Dataset"
+          and len(fields) >= 2
+          and any(field.get("description") for field in fields),
+          f"{model_detail.get('displayName')}：{len(fields)} 列，示例 {fields[0].get('name') if fields else '—'}")
+
+    status, sub_dbt = call("GET",
+                           f"/api/v1/lineage/subgraph?urn={urllib.parse.quote(dbt_model_urn, safe='')}"
+                           "&direction=upstream&depth=3&includeColumns=true")
+    up_urns = [node.get("urn") for node in (sub_dbt.get("nodes") or [])]
+    check("38e. source 解析到**已采集的物理表**，于是 dbt 链路与物理血缘接得上",
+          status == 200 and any(str(urn).endswith("postgresql.dg.public.event_log") for urn in up_urns),
+          f"上游 {len(up_urns)} 个节点：{[str(u).split('.')[-1] for u in up_urns][:6]}")
+
+    status, sub_dbt_down = call("GET",
+                                f"/api/v1/lineage/subgraph?urn={urllib.parse.quote(dbt_model_urn, safe='')}"
+                                "&direction=downstream&depth=3")
+    down_urns = [node.get("urn") for node in (sub_dbt_down.get("nodes") or [])]
+    check("38f. 「模型 → 物化的物理表」边存在（{0} 读法就是真实链路）".format("源表 → 模型 → 物理表"),
+          status == 200 and any(str(urn).endswith("postgresql.dg.public.alert_event") for urn in down_urns),
+          f"下游 {len(down_urns)} 个节点：{[str(u).split('.')[-1] for u in down_urns][:6]}")
+
+    dbt_edges = [edge for edge in (sub_dbt_down.get("edges") or [])
+                 if edge.get("source") == "dbt_manifest"]
+    check("38g. 血缘带来源与置信度（dbt 是编译期事实：source=dbt_manifest、confidence=1.0）",
+          bool(dbt_edges) and all(abs(float(edge.get("confidence", 0)) - 1.0) < 1e-6 for edge in dbt_edges),
+          f"{len(dbt_edges)} 条 dbt 边，示例 {str(dbt_edges[0].get('fromUrn')).split('.')[-1]} → "
+          f"{str(dbt_edges[0].get('toUrn')).split('.')[-1]}"
+          if dbt_edges else "没有 dbt 来源的边")
+
+    status, missing = call("POST", "/api/v1/collect/run", {
+        "source": "dbt", "dsn": "dbt:///nonexistent/dbt/project", "namespace": NAMESPACE})
+    # 两种形态都算合格：配置错误（400 + 可操作提示）更早失败，比"跑一轮然后 FAILED"更友好
+    missing_message = str(missing.get("message", "")) if isinstance(missing, dict) else str(missing)
+    errors = " ".join(missing.get("errors", [])) if isinstance(missing, dict) else ""
+    check("38h. manifest 不存在时给出**可操作的**错误（提示先 dbt compile），而不是空结果",
+          (status == 400 and "dbt compile" in missing_message)
+          or (missing.get("status") == "FAILED" and "dbt compile" in errors),
+          (missing_message or errors)[:84])
+
     # ------------------------------------------------------------ 23) 界面
     status, html = call("GET", "/", token=None)
     is_html = isinstance(html, str) and 'id="root"' in html

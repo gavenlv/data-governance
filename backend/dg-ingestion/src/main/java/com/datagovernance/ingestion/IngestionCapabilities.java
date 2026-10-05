@@ -23,14 +23,19 @@ public class IngestionCapabilities implements CapabilityProvider {
                         "docs/09 §9.1", "collect_run / collector_state：运行历史、连续失败、陈旧度"),
                 CapabilityDescriptor.partial("ingestion.connectors-more", "更多连接器", "D1 元数据底座",
                         "docs/11 §1.1", "Phase 1",
-                        "已实现 5 个连接器：PostgreSQL、ClickHouse（HTTP 接口 + 分区/排序键）、"
+                        "已实现 6 个连接器：PostgreSQL、ClickHouse（HTTP 接口 + 分区/排序键）、"
                                 + "MongoDB（无 schema → 采样推断）、BigQuery（REST + 自签 JWT）、"
-                                + "Superset（BI 资产：仪表板 + 图表 + readsFrom 血缘）。"
-                                + "前四个产出数据集，Superset 产出 BI 资产",
-                        List.of("已对真实系统验证：PostgreSQL / ClickHouse / MongoDB / Superset（见 tools/java_e2e_verify.py）",
+                                + "Superset（BI 资产：仪表板 + 图表 + readsFrom 血缘）、"
+                                + "**dbt**（读 manifest.json：model/seed/snapshot/source 成为独立资产，"
+                                + "并产出**编译期确定的血缘** depends_on，同时建立「模型 → 物化的物理表」边）。"
+                                + "数据源连接器产出数据集，Superset 产出 BI 资产，dbt 两者兼有",
+                        List.of("已对真实系统验证：PostgreSQL / ClickHouse / MongoDB / Superset / **dbt**"
+                                        + "（dbt 用真实形态的 manifest.json 夹具 + 端到端验证；见 tools/java_e2e_verify.py 38a–38h）",
                                 "**未对真实系统验证：BigQuery**（无项目凭据；代码按 REST v2 + RS256 JWT 实现，"
                                         + "缺凭据时给出可读错误而不是静默返回空数据集）",
-                                "未实现：MySQL / Trino / Hive-HMS / dbt manifest / Airflow / SQLite / DuckDB / Tableau",
+                                "未实现：MySQL / Trino / Hive-HMS / Airflow / SQLite / DuckDB / Tableau",
+                                "dbt 的**列级**血缘未做：manifest 只给表级依赖，列级需把 compiled_code 交给 "
+                                        + "sqlglot 侧车（POST /api/v1/lineage/parse 已可用）",
                                 "连接器状态由 ConnectorRegistry 单点声明，界面与接口共用（避免'界面上有、实际不支持'）")),
                 CapabilityDescriptor.implemented("ingestion.edge-agent", "Edge Agent（推模式）", "D1 元数据底座",
                         "ADR-012",

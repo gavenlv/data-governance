@@ -26,6 +26,10 @@ public record CollectionRun(
         int dashboardsDeleted,
         boolean dashboardGuardBlocked,
         String dashboardGuardReason,
+        /** 连接器自带血缘写入的边数（如 dbt manifest 的 depends_on）。 */
+        int edgesWritten,
+        /** 血缘跳过说明（解析不到 URN 的边）：必须可见，否则会让人以为血缘已经全了。 */
+        List<String> edgeSkipNotes,
         List<String> errors,
         long durationMs,
         Instant startedAt,
@@ -39,6 +43,7 @@ public record CollectionRun(
 
     public CollectionRun {
         errors = List.copyOf(errors == null ? List.of() : errors);
+        edgeSkipNotes = List.copyOf(edgeSkipNotes == null ? List.of() : edgeSkipNotes);
     }
 
     public boolean ok() {
@@ -69,6 +74,10 @@ public record CollectionRun(
         if (dashboardGuardBlocked) {
             out.put("dashboardGuardBlocked", true);
             out.put("dashboardGuardReason", dashboardGuardReason);
+        }
+        out.put("edgesWritten", edgesWritten);
+        if (!edgeSkipNotes.isEmpty()) {
+            out.put("edgeSkipNotes", edgeSkipNotes);
         }
         out.put("errors", errors);
         out.put("durationMs", durationMs);

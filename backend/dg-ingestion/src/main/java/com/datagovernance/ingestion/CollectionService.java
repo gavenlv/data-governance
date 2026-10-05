@@ -219,13 +219,14 @@ public class CollectionService {
         long durationMs = Duration.between(startedAt, finishedAt).toMillis();
         finishRunRecord(runId, status, blockReason, counters, deletedCandidates, deleted,
                 columns[0], dashboardsSunk, dashboardGuard[0], dashboardGuardReason[0],
-                errors, finishedAt, durationMs);
+                edgesWritten, skipNotes, errors, finishedAt, durationMs);
 
         return new CollectionRun(runId, source.name(), namespace, scope, status, blockReason,
                 counters[0], counters[1], counters[2], counters[3], counters[4],
                 deletedCandidates, deleted, columns[0],
                 dashboardsSunk[0], dashboardsSunk[1], dashboardsSunk[2],
                 dashboardGuard[0], dashboardGuardReason[0],
+                edgesWritten, skipNotes,
                 errors, durationMs, startedAt, finishedAt, decision);
     }
 
@@ -458,7 +459,7 @@ public class CollectionService {
     private void finishRunRecord(String runId, String status, String blockReason, int[] counters,
                                  int deletedCandidates, int deleted, int columnsSeen,
                                  int[] dashboards, boolean dashboardGuardBlocked,
-                                 String dashboardGuardReason,
+                                 String dashboardGuardReason, int edgesWritten, List<String> edgeSkipNotes,
                                  List<String> errors, Instant finishedAt, long durationMs) {
         jdbc.update("""
                 UPDATE collect_run
@@ -466,12 +467,13 @@ public class CollectionService {
                        schemas_written = ?, schemas_unchanged = ?, deleted_candidates = ?,
                        deleted = ?, columns_seen = ?, dashboards_seen = ?, dashboards_created = ?,
                        dashboards_deleted = ?, dashboard_guard_blocked = ?, dashboard_guard_reason = ?,
+                       edges_written = ?, edge_skip_notes = CAST(? AS jsonb),
                        errors = CAST(? AS jsonb),
                        finished_at = ?, duration_ms = ?
                  WHERE run_id = ?
                 """, status, blockReason, counters[0], counters[1], counters[2], counters[3],
                 deletedCandidates, deleted, columnsSeen, dashboards[0], dashboards[1], dashboards[2],
-                dashboardGuardBlocked, dashboardGuardReason,
+                dashboardGuardBlocked, dashboardGuardReason, edgesWritten, toJson(edgeSkipNotes),
                 toJson(errors),
                 java.sql.Timestamp.from(finishedAt), (int) durationMs, runId);
     }

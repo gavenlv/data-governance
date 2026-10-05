@@ -16,8 +16,9 @@
 分批实施进度见 `docs/22`：**Batch 1（检索 / 权限 / 调度 / SQL 解析）、Batch 2（剖析 / 规则引擎 /
 ODCS 契约 / CI 门禁）、Batch 3（四个连接器 + BI 资产血缘 + 血缘画布）、
 Batch 4（访问申请审批 / 策略编译下发 / 覆盖率与审计）、Batch 5（AI 建议与 MCP / 异常检测与 SLO 事故 /
-语义层指标 / Edge Agent 推模式）、Batch 6（引擎审计摄入 / GitHub+GitLab CI 插件 / 仓库 CI 流水线）
-均已完成**（`docs/21 §12`–`§19`）。
+语义层指标 / Edge Agent 推模式）、Batch 6（引擎审计摄入 / GitHub+GitLab CI 插件 / 仓库 CI 流水线）、
+Batch 7（dbt 连接器 + 编译期血缘）
+均已完成**（`docs/21 §12`–`§20`）。
 状态只在跑过可复现验证后才改，不虚标。
 
 ### 已支持的资产类别与数据源
@@ -28,9 +29,10 @@ Batch 4（访问申请审批 / 策略编译下发 / 覆盖率与审计）、Batc
 | **ClickHouse** | 数据集（含引擎、分区键、排序键） | ✅ 已对真实系统验证 |
 | **MongoDB** | 数据集（无 schema → 采样推断结构） | ✅ 已对真实系统验证 |
 | **Apache Superset** | **BI 资产**（仪表板 + 图表）+ `数据集→报表` 血缘 | ✅ 已对真实系统验证 |
+| **dbt** | 数据集（model / seed / snapshot / source）+ **编译期确定的表级血缘** | ✅ 已用真实形态的 manifest 夹具端到端验证 |
 | BigQuery | 数据集（REST + 服务账号 JWT） | ⚠️ 已实现，**未对真实项目验证**（无凭据） |
 | **私有子网 / 数据不出域** | 数据集（**Edge Agent 推模式**：注册 → 心跳 → 上报） | ✅ 控制面侧已对真实接口验证；**Go 单二进制 Agent 本体未实现**（任何能发 HTTP 的采集器可用） |
-| MySQL / Trino / Hive / dbt / Airflow / SQLite / DuckDB / Tableau | — | ❌ 未实现（界面已标注） |
+| MySQL / Trino / Hive / Airflow / SQLite / DuckDB / Tableau | — | ❌ 未实现（界面已标注） |
 
 ## 快速开始
 
@@ -73,8 +75,8 @@ pnpm dev        # http://127.0.0.1:5173，/api 自动代理到 8081
 ### 3) 验证
 
 ```powershell
-python tools/java_e2e_verify.py     # Java 控制面端到端（139 项；自动拉起并关闭 SQL 解析侧车）
-cd backend; mvn -B test             # Java 单元测试（142 项，含数组绑定门禁）
+python tools/java_e2e_verify.py     # Java 控制面端到端（147 项；自动拉起并关闭 SQL 解析侧车）
+cd backend; mvn -B test             # Java 单元测试（150 项，含数组绑定门禁）
 $env:PYTHONPATH='src'; python -m pytest -q   # Python 参考实现（250 项）
 python tools/ui_render_check.py     # 界面渲染冒烟（无头 Chrome，逐标签页 dump DOM；10 项）
 python tools/dependency_audit.py --self-test  # 供应链：先证明扫描链路有效（反向用例）
