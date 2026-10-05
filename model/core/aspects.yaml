@@ -162,3 +162,36 @@ aspectTypes:
       - {name: published,       type: boolean}
       - {name: certified,       type: boolean}
       - {name: lastRefreshedAt, type: string}
+
+  # ---------------------------------------------------------------------------
+  # 语义层指标：业务口径的一等公民（docs/13 §6）。
+  # 指标必须能追溯到物理列，否则"GMV 怎么算的"永远说不清。
+  # ---------------------------------------------------------------------------
+  - name: metricSpec
+    displayName: 指标定义（语义层）
+    description: 业务指标的口径：表达式 + 依赖的物理列 + 来源（dbt Semantic Layer / Cube / 平台定义）
+    sourceTracked: true
+    properties:
+      - {name: metricName,     type: string, required: true}
+      - {name: metricType,     type: enum, values: [SIMPLE, RATIO, DERIVED, CUMULATIVE], default: SIMPLE}
+      - {name: expression,     type: string}
+      - {name: sourceFormat,   type: enum, values: [dg, dbt, cube], default: dg}
+      - {name: physicalColumns, type: array, itemsType: string}
+      - {name: dimensions,     type: array, itemsType: object}
+
+  # ---------------------------------------------------------------------------
+  # 业务术语：术语表的核心不是"名字"，而是**定义 + 同义词**（docs/09 §9.3）。
+  # synonyms 是一等字段而不是塞进描述里：检索的同义词扩展直接读它，
+  # 否则"客户/买方/customer 是同一个东西"这件事在检索里根本用不上。
+  # ---------------------------------------------------------------------------
+  - name: termSpec
+    displayName: 术语定义
+    description: 业务术语的定义、同义词与治理归属；同义词是检索同义扩展的数据来源
+    sourceTracked: true
+    properties:
+      - {name: definition, type: string}
+      - {name: synonyms,   type: array, itemsType: string}
+      - {name: status,     type: enum, values: [DRAFT, APPROVED, DEPRECATED], default: DRAFT}
+      - {name: steward,    type: string}
+      - {name: relatedTerms, type: array, itemsType: string}
+      - {name: sourceRef,  type: string}

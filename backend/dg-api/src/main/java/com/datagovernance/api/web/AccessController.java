@@ -8,6 +8,7 @@ import com.datagovernance.api.security.Subjects;
 import com.datagovernance.policy.AccessAuditService;
 import com.datagovernance.policy.AccessPolicy;
 import com.datagovernance.policy.AccessRequestService;
+import com.datagovernance.policy.EngineAuditService;
 import com.datagovernance.policy.Subject;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -30,10 +31,13 @@ public class AccessController {
 
     private final AccessRequestService accessRequests;
     private final AccessAuditService audit;
+    private final EngineAuditService engineAudit;
 
-    public AccessController(AccessRequestService accessRequests, AccessAuditService audit) {
+    public AccessController(AccessRequestService accessRequests, AccessAuditService audit,
+                            EngineAuditService engineAudit) {
         this.accessRequests = accessRequests;
         this.audit = audit;
+        this.engineAudit = engineAudit;
     }
 
     // ------------------------------------------------------------------ 申请
@@ -164,6 +168,56 @@ public class AccessController {
         return audit.leastPrivilegeReview(limit);
     }
 
+    // -------------------------------------------------------------- 引擎审计
+    // 「引擎侧的真实访问」是审计闭环的最后一块：没有它，
+    // 「批准了但没被用过」与「被访问了但没被批准过」都只能靠人工判断。
+
+    /** 摄入一批引擎审计记录（Trino 查询事件 / Ranger 访问审计 / 数仓查询日志）。 */
+    @PostMapping("/engine-audit")
+    public Map<String, Object> ingestEngineAudit(@RequestBody EngineAuditBody body) {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "governance:write");
+        return engineAudit.ingest(new EngineAuditService.IngestRequest(
+                body.engine(), body.namespace(),
+                body.records() == null ? List.of() : body.records()), subject.id());
+    }
+
+    /** 引擎审计接入情况（接入了多少、观测窗口多长、多少条没解析出资产）。 */
+    @GetMapping("/engine-audit/coverage")
+    public Map<String, Object> engineAuditCoverage() {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "asset:read");
+        return engineAudit.coverage();
+    }
+
+    /** 原始引擎审计记录（取证用，可按资源/主体/时间窗过滤）。 */
+    @GetMapping("/engine-audit")
+    public Map<String, Object> engineAuditRecords(@RequestParam(required = false) String resourceUrn,
+                                                  @RequestParam(required = false) String actor,
+                                                  @RequestParam(required = false) Integer days,
+                                                  @RequestParam(defaultValue = "200") int limit) {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "asset:read");
+        List<Map<String, Object>> rows = engineAudit.records(resourceUrn, actor, days, limit);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("count", rows.size());
+        payload.put("records", rows);
+        return payload;
+    }
+
+    /**
+     * 「被访问了但从未被批准」的清单 —— 绕过治理的访问信号。
+     *
+     * <p>这是接入引擎审计之后**新出现**的能力：此前覆盖率报告里只能写"直连绕过无法检测"。
+     */
+    @GetMapping("/unapproved-access")
+    public Map<String, Object> unapprovedAccess(@RequestParam(defaultValue = "90") int days,
+                                                @RequestParam(defaultValue = "100") int limit) {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "asset:read");
+        return engineAudit.unapprovedAccess(days, limit);
+    }
+
     // ------------------------------------------------------------------ 请求体
 
     public record SubmitBody(String resourceUrn, String columnName, String granularity,
@@ -177,5 +231,8 @@ public class AccessController {
     }
 
     public record ReviewBody(long grantId, String decision, String reason) {
+    }
+
+    public record EngineAuditBody(String engine, String namespace, List<Map<String, Object>> records) {
     }
 }

@@ -185,11 +185,21 @@ public class SearchIndexConsumer {
         List<String> tags = tagsOf(aspects.get("tags"));
         String classification = str(levelOf(aspects.get("classification")));
 
+        // 术语的同义词必须进索引，否则"客户 = 买方 = customer"这件事在检索里用不上：
+        // 混合检索的术语同义扩展（ai.semantic-search）正是靠"同义词命中术语 → 用术语名再检索"两步实现的。
+        // 注意：同义词只并入**检索文本**，不写入 tags 列 —— 否则界面上会把同义词显示成标签。
+        List<String> synonyms = synonymsOf(aspects.get("termSpec"));
+
         String displayName = str(entity.get("display_name"));
         if (displayName == null || displayName.isBlank()) {
             displayName = parts[parts.length - 1];
         }
-        String docText = IdentifierTokenizer.buildSearchText(displayName, urn, description, tags);
+        String baseText = IdentifierTokenizer.buildSearchText(displayName, urn, description, tags);
+        // docText 会在下面的 lambda 里用到，因此必须是 effectively final（分两步赋值）
+        // 同义词走 tags 参数（→ 逐词切分），不能走 description 之外的旁路，
+        // 否则中文同义词会以整段形式入索引，与查询侧的 bigram 对不上
+        final String docText = synonyms.isEmpty() ? baseText
+                : baseText + " " + IdentifierTokenizer.buildSearchText("", "", null, synonyms);
 
         final String finalDisplayName = displayName;
         jdbc.update(connection -> {
@@ -334,6 +344,24 @@ public class SearchIndexConsumer {
 
     private static String str(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    /** termSpec.synonyms（术语同义词），供检索文本使用。 */
+    private static List<String> synonymsOf(Map<String, Object> aspect) {
+        if (aspect == null) {
+            return List.of();
+        }
+        Object raw = aspect.get("synonyms");
+        if (!(raw instanceof List<?> list)) {
+            return List.of();
+        }
+        List<String> synonyms = new java.util.ArrayList<>();
+        for (Object item : list) {
+            if (item != null && !String.valueOf(item).isBlank()) {
+                synonyms.add(String.valueOf(item));
+            }
+        }
+        return synonyms;
     }
 
     /** 一次消费的结果。 */

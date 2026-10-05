@@ -29,19 +29,30 @@ public class CoreCapabilities implements CapabilityProvider {
                         "docs/09 §9.2", "边带来源/置信度/时效；UNION 去环、深度有界、排除控制依赖"),
                 CapabilityDescriptor.partial("core.codegen", "模型→代码生成", "D1 元数据底座",
                         "docs/08 §6", "Phase 1",
-                        "由模型定义生成 Python/TypeScript/JSON Schema",
-                        List.of("Python 参考实现已提供 dgctl codegen；Java 侧生成器未实现",
-                                "Java 与 TS 类型目前由构建期脚本从同一份 YAML 派生，尚未纳入 CI 门禁")),
+                        "由同一份 model/**.yaml 生成 Python 数据类 / TypeScript 类型 / JSON Schema；"
+                                + "生成物带「勿手改」头；本批次新增的 Metric 实体、metricSpec 等 4 个 aspect、"
+                                + "consumedBy 关系边都由它重新生成，未手写类型",
+                        List.of("已实现：dgctl codegen（生成）+ dgctl codegen --check（校验生成物是否为最新）",
+                                "已实现：**CI 流水线**（.github/workflows/ci.yml）—— 模型校验、codegen --check、"
+                                        + "Java 单测、前端构建、Python 测试、供应链扫描、端到端，全部作为门禁步骤",
+                                "**未实现：Java 侧生成器** —— Java 只做运行期模型校验（ModelRegistry），不生成代码。"
+                                        + "生成只有一个来源（Python 的模型工具链），避免两套生成器漂移。"
+                                        + "这是**有意的取舍**而不是缺口：两份生成器一定会漂移，而漂移的生成物比不生成更危险",
+                                "验收：CI 里 codegen --check 是门禁步骤（模型改了没重新生成 → 流水线红）")),
                 CapabilityDescriptor.implemented("core.search-index", "搜索索引消费者", "D2 目录与发现",
                         "docs/09 §9.3",
                         "从事件流构建可重放重建的检索视图（search_doc）；标识符切分（_/驼峰）+ 前置授权过滤 + "
                                 + "索引水位可见；POST /api/v1/index/rebuild 可证明派生视图确实可丢弃重建"),
-                CapabilityDescriptor.notImplemented("core.search-chinese", "中文全文检索", "D2 目录与发现",
+                CapabilityDescriptor.partial("core.search-chinese", "中文检索", "D2 目录与发现",
                         "docs/09 §9.3", "Phase 2",
-                        "中文分词（pg_jieba/zhparser 或 OpenSearch+IK）、同义词（术语表作同义词源）、拼音别名",
-                        List.of("当前用 PG simple 配置：标识符切分可用，**中文按字切分不可用**",
-                                "已固化为已知限制（docs/21 §6）；补分词器或迁 OpenSearch 后该限制解除",
-                                "向量检索与 RRF 融合排序属 ai.semantic-search（Batch 5）")),
+                        "中文走 **bigram（二元切分）** 而非按字切分：多字中文标识符（如「客户订单明细」）"
+                                + "被切成重叠的二元组写入索引，查询侧同样切分，因此连续中文串能命中；"
+                                + "英文标识符仍按 _ / 驼峰切分",
+                        List.of("已实现：bigram 切分 + 查询侧同构切分（e2e 覆盖中文串能召回）",
+                                "**未实现：词典分词**（pg_jieba / zhparser / IK）—— bigram 的正确率低于真分词，"
+                                        + "会带来部分误召回（如「订单」与「单明」）；这是精度换可用性的折中，不是最终形态",
+                                "未实现：拼音别名、繁简归一、词典同义词（术语表扩展目前只在 ai.semantic-search 里做）",
+                                "升级路径：装 pg_jieba/zhparser 后把切分函数换成词典分词，索引与查询两侧同改即可")),
                 CapabilityDescriptor.notImplemented("core.index-opensearch", "OpenSearch 索引后端", "D2 目录与发现",
                         "docs/10 §3.2", "Phase 2",
                         "把检索索引从 PG tsvector 换成 OpenSearch（alias 零停机切换、IK 分词、kNN 向量）",

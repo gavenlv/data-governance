@@ -29,6 +29,14 @@
             <groupId>com.datagovernance</groupId>
             <artifactId>dg-ingestion</artifactId>
         </dependency>
+        <!--
+          事故的影响面直接复用血缘的影响分析（dg-lineage 的 ImpactService）：
+          自己再写一遍"下游是谁"的遍历，等于让"影响面"有两个口径。
+        -->
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-lineage</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>

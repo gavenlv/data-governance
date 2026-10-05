@@ -1,0 +1,193 @@
+# ============================================================================
+# 本仓库自己的 CI（GitHub Actions）。
+#
+# 说明：早期版本的 docs/21 里写着"仓库内没有 CI 流水线，门禁需要由使用方自己的 CI 调用"。
+# 现在补上：既跑本仓库的验证，也作为**门禁插件的活样本**（.github/actions/contract-gate）。
+#
+# 三条纪律：
+#   1. 每一步都是"可复现的验证命令"，不是"看起来在跑"；
+#   2. 供应链扫描（NFR-SEC-01）与代码/模型门禁**同等对待**：失败即红；
+#   3. 需要外部服务的检查（PostgreSQL、SQL 解析侧车）在本文件里显式声明，
+#      不因为"CI 里跑不了"就把它们从 DoD 里删掉。
+# ============================================================================
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------- 模型与生成物
+  model-and-codegen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 安装依赖
+        run: pip install --quiet pyyaml
+      - name: 模型校验（唯一事实源必须自洽）
+        run: PYTHONPATH=src python -m dg.cli model
+      - name: 代码生成物是否最新（模型改了但没重新生成 → 红）
+        run: PYTHONPATH=src python -m dg.cli codegen --check
+
+  # ------------------------------------------------------------------ Java 控制面
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: 单元测试（含数组绑定门禁）
+        working-directory: backend
+        run: mvn -B test
+
+  # ---------------------------------------------------------------------- 界面
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: 安装
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: 构建（tsc 严格模式 + vite build）
+        working-directory: web
+        run: pnpm build
+
+  # -------------------------------------------------------- 参考实现（Python 侧车）
+  python-reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 安装依赖
+        run: pip install --quiet -e . pytest
+      - name: 测试
+        run: PYTHONPATH=src python -m pytest -q
+
+  # -------------------------------------------------- 供应链安全（NFR-SEC-01）
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: 安装依赖（清点需要）
+        run: |
+          pip install --quiet pyyaml
+          cd web && pnpm install --frozen-lockfile
+      - name: 先证明扫描链路有效（反向用例）
+        run: python tools/dependency_audit.py --self-test
+      - name: 依赖漏洞扫描（0 干净 / 1 有阻断项 / 2 未验证）
+        run: python tools/dependency_audit.py
+
+  # -------------------------------------------------- 端到端（需要 PostgreSQL）
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dg
+        ports:
+          - 25011:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 10s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 构建控制面
+        working-directory: backend
+        run: mvn -B package -DskipTests
+      - name: 启动控制面
+        run: |
+          export DG_MODEL_DIR="$PWD/model" DG_SQL_DIR="$PWD/sql" DG_API_PORT=8081
+          export DG_WEB_DIST="$PWD/web/dist"
+          nohup java -jar backend/dg-api/target/dg-api-0.1.0.jar > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8081/healthz && break || sleep 2
+          done
+      - name: 端到端验证（自动拉起并关闭 SQL 解析侧车）
+        run: |
+          pip install --quiet -e . sqlglot pyyaml
+          PYTHONPATH=src python tools/java_e2e_verify.py
+      - name: 失败时输出服务日志
+        if: failure()
+        run: tail -200 server.log
+
+  # ------------------------------------------- 门禁插件自身的活样本（PR 上运行）
+  # 它同时是被使用的插件和它的文档：看一眼这个 job 就知道怎么接。
+  contract-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dg
+        ports:
+          - 25011:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 10s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: 构建并启动控制面
+        run: |
+          cd backend && mvn -B package -DskipTests
+          cd ..
+          export DG_MODEL_DIR="$PWD/model" DG_SQL_DIR="$PWD/sql" DG_API_PORT=8081
+          nohup java -jar backend/dg-api/target/dg-api-0.1.0.jar > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8081/healthz && break || sleep 2
+          done
+      - uses: ./.github/actions/contract-gate
+        with:
+          contract: contracts/example_event_log.yaml
+          namespace: prod
+          base-url: http://127.0.0.1:8081
+          token: dev-admin-token
+          require-no-undetected-consumers: 'false'

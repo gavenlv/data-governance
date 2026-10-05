@@ -38,4 +38,28 @@ public interface Source {
     default Stream<RawModels.RawDashboard> extractDashboards() {
         return Stream.empty();
     }
+
+    /**
+     * 连接器**自带**的血缘边（默认无）。
+     *
+     * <p>存在的理由：有些源系统本来就带着精确的依赖关系 —— dbt 的 {@code manifest.json}
+     * 里 {@code depends_on} 是编译期确定的，比事后解析 SQL 更准（不受方言与动态 SQL 影响）。
+     * 这类"已知事实"应该直接交出来，而不是让所有源都去猜。
+     *
+     * <p>与数据集同样的纪律：连接器只产出，落库与护栏由 {@link CollectionService} 统一处理；
+     * 解析不到 URN 的边应当**根本不出现在这里**（宁可缺边也不猜），并可通过
+     * {@link #edgeSkipNotes()} 说明跳过了什么。
+     */
+    default Stream<RawModels.RawEdge> extractEdges() {
+        return Stream.empty();
+    }
+
+    /**
+     * 血缘产出过程中的"跳过说明"（例如"3 个 ref 解析不到平台资产"）。
+     *
+     * <p>与解析失败必须显式回报是同一条纪律：静默跳过会让人以为血缘已经全了。
+     */
+    default java.util.List<String> edgeSkipNotes() {
+        return java.util.List.of();
+    }
 }

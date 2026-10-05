@@ -66,6 +66,49 @@ public class ApiExceptionHandler {
         return body(HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage());
     }
 
+    /**
+     * Edge Agent 错误 → 按 {@code kind} 映射 401 / 404 / 422。
+     *
+     * <p>刻意不看消息文本：凭据问题与内容问题必须靠**类型**区分，
+     * 否则一句「Agent 不存在」就会被判成未鉴权（早期版本正是这么错的）。
+     */
+    @ExceptionHandler(com.datagovernance.ingestion.edge.EdgeAgentService.EdgeException.class)
+    public ResponseEntity<Map<String, Object>> edge(
+            com.datagovernance.ingestion.edge.EdgeAgentService.EdgeException e) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        if (e.isUnauthorized()) {
+            payload.put("error", "agent_unauthorized");
+            payload.put("message", e.getMessage());
+            payload.put("hint", "Agent 凭据在注册时一次性下发，平台只存哈希；吊销后立即失效"
+                    + "（POST /api/v1/edge/agents/{id}/revoke）");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(payload);
+        }
+        if (e.isNotFound()) {
+            return body(HttpStatus.NOT_FOUND, e.getMessage());
+        }
+        payload.put("error", "edge_rejected");
+        payload.put("message", e.getMessage());
+        payload.put("hint", "上报被护栏拒绝时**不写入也不截断**：按提示分批后重试");
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(payload);
+    }
+
+    /**
+     * AI 能力错误 → 按 {@code kind} 映射：未配置走 502，请求/内容不合法走 422。
+     *
+     * <p>「没配大模型」刻意<b>不</b>降级成"用模板凑一个答案"：那会让人以为真的调用了大模型。
+     */
+    @ExceptionHandler(com.datagovernance.ai.AiException.class)
+    public ResponseEntity<Map<String, Object>> ai(com.datagovernance.ai.AiException e) {
+        if (!e.isNotConfigured()) {
+            return body(HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage());
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("error", "ai_unavailable");
+        payload.put("message", e.getMessage());
+        payload.put("hint", "AI 能力状态见 GET /api/v1/ai/status；未配置的能力不会伪造结果（docs/13 §4）");
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(payload);
+    }
+
     @ExceptionHandler(MetadataException.ValidationFailed.class)
     public ResponseEntity<Map<String, Object>> validation(MetadataException.ValidationFailed e) {
         Map<String, Object> payload = new LinkedHashMap<>();

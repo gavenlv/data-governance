@@ -47,7 +47,7 @@ entityTypes:
 
   - name: GlossaryTerm
     displayName: 业务术语
-    aspects: [descriptions, tags, ownership]
+    aspects: [descriptions, tags, ownership, termSpec]
 
   - name: Tag
     displayName: 标签
@@ -84,6 +84,12 @@ entityTypes:
     description: 统一 IR 的质量规则（可编译为引擎 SQL 或外部 DSL）
     namespaceScoped: true
     aspects: [descriptions, tags, ownership, lifecycle, ruleSpec]
+
+  - name: Metric
+    displayName: 业务指标
+    description: 语义层指标（GMV、活跃用户…）：口径可追溯到物理列（docs/13 §6）
+    namespaceScoped: true
+    aspects: [descriptions, tags, ownership, lifecycle, metricSpec]
 
 # ---------------------------------------------------------------------------
 # 关系类型。category 决定删除语义（借鉴 Atlas relationshipCategory，见 08 §4.6）：
@@ -137,12 +143,12 @@ relationshipTypes:
   - name: consumedBy
     displayName: 被消费
     description: |
-      血缘边：数据集/列被下游资产（报表、管道）消费。方向遵循 from=上游、to=下游，
-      因此 BI 报表的影响分析（"这张表要改，哪些看板会受影响"）可以直接复用血缘遍历。
+      血缘边：数据集/列被下游资产（报表、管道、指标）消费。方向遵循 from=上游、to=下游，
+      因此"这张表要改，哪些看板/指标会受影响"可以直接复用血缘遍历与影响分析。
     category: ASSOCIATION
     lineage: true
     from: [Dataset, Column]
-    to: [Dashboard, Pipeline]
+    to: [Dashboard, Pipeline, Metric]
 
   - name: writesTo
     displayName: 写入

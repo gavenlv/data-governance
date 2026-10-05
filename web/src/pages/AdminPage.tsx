@@ -7,6 +7,7 @@ import {
   Empty,
   Form,
   Input,
+  Modal,
   Row,
   Select,
   Space,
@@ -22,12 +23,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type CollectRun } from '../api/client'
 import { CapabilityBadge } from '../components/CapabilityBadge'
 import { useCapabilities } from '../hooks/useCapabilities'
+import { useTabParam } from '../hooks/useTabParam'
 
 const { Title, Text, Paragraph } = Typography
 
 /** 管理：采集（已实现）、健康度（已实现）、模型（已实现）、能力清单（已实现）、调度与告警（未实现）。 */
 export default function AdminPage() {
   const capabilities = useCapabilities()
+  const [tab, setTab] = useTabParam('collect')
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -43,9 +46,12 @@ export default function AdminPage() {
       </div>
 
       <Tabs
+        activeKey={tab}
+        onChange={setTab}
         items={[
           { key: 'collect', label: '采集', children: <CollectTab /> },
           { key: 'health', label: '采集健康度', children: <HealthTab /> },
+          { key: 'edge', label: 'Edge Agent（推模式）', children: <EdgeTab /> },
           { key: 'schedule', label: '采集调度', children: <ScheduleTab /> },
           { key: 'index', label: '检索索引', children: <IndexTab /> },
           { key: 'model', label: '元数据模型', children: <ModelTab /> },
@@ -57,6 +63,249 @@ export default function AdminPage() {
           },
         ]}
       />
+    </Space>
+  )
+}
+
+/**
+ * Edge Agent（ADR-012 的推模式）。
+ *
+ * <p>为什么需要它：企业环境的硬约束是数据不出域（私有子网、专有云），主动拉取在这些环境里连不上，
+ * 只能由数据侧的 Agent 把元数据推上来。
+ *
+ * <p>页面上如实标注：<b>控制面侧的协议与接入点已实现，Go 单二进制 Agent 本体未实现</b>。
+ */
+function EdgeTab() {
+  const capabilities = useCapabilities()
+  const queryClient = useQueryClient()
+  const [form] = Form.useForm()
+  const [credentials, setCredentials] = useState<Record<string, unknown> | null>(null)
+  const [revoking, setRevoking] = useState<string | null>(null)
+
+  const agents = useQuery({ queryKey: ['edge-agents'], queryFn: () => api.edgeAgents() })
+  const reports = useQuery({ queryKey: ['edge-reports'], queryFn: () => api.edgeReports() })
+
+  const register = useMutation({
+    mutationFn: (values: Record<string, unknown>) =>
+      api.edgeRegisterAgent({
+        agentId: String(values.agentId),
+        displayName: values.displayName ? String(values.displayName) : undefined,
+        namespace: values.namespace ? String(values.namespace) : 'prod',
+        capabilities: values.capabilities
+          ? String(values.capabilities)
+              .split(',')
+              .map((item) => item.trim())
+              .filter(Boolean)
+          : [],
+        version: values.version ? String(values.version) : undefined,
+      }),
+    onSuccess: (result) => {
+      setCredentials(result)
+      form.resetFields()
+      void queryClient.invalidateQueries({ queryKey: ['edge-agents'] })
+    },
+  })
+
+  const revoke = useMutation({
+    mutationFn: (values: { agentId: string; reason: string }) => api.edgeRevokeAgent(values.agentId, values.reason),
+    onSuccess: () => {
+      setRevoking(null)
+      void queryClient.invalidateQueries({ queryKey: ['edge-agents'] })
+      void queryClient.invalidateQueries({ queryKey: ['edge-reports'] })
+      message.success('凭据已吊销（历史上报记录保留，可追溯）')
+    },
+  })
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Alert
+        type="warning"
+        showIcon
+        message="推模式的协议与控制面已实现；Agent 本体（Go 单二进制）未实现"
+        description={
+          <>
+            任何能发 HTTP 的采集器（脚本 / cron / k8s Job）现在就能用：
+            <Text code>POST /api/v1/edge/agent/heartbeat</Text>、
+            <Text code>POST /api/v1/edge/agent/report</Text>，凭据放{' '}
+            <Text code>Authorization: Bearer dgagent_…</Text>。
+            上报的元数据走同一套 URN 形状与来源保护（AUTO_COLLECTED），会进入检索索引与血缘图 —— 推模式不是侧路。
+          </>
+        }
+      />
+
+      <Row gutter={16}>
+        <Col span={14}>
+          <Card
+            size="small"
+            title="已注册的 Agent"
+            extra={<CapabilityBadge status={capabilities.get('ingestion.edge-agent')?.status ?? 'NOT_IMPLEMENTED'} />}
+          >
+            <Table
+              size="small"
+              rowKey="agent_id"
+              loading={agents.isLoading}
+              dataSource={agents.data?.agents ?? []}
+              pagination={false}
+              columns={[
+                {
+                  title: 'Agent',
+                  dataIndex: 'agent_id',
+                  render: (value: string, row) => (
+                    <Space direction="vertical" size={0}>
+                      <Text strong>{row.display_name ?? value}</Text>
+                      <Text type="secondary" style={{ fontSize: 11 }}>
+                        {value} · {row.namespace} · v{row.version ?? '—'}
+                      </Text>
+                    </Space>
+                  ),
+                },
+                {
+                  title: '能力',
+                  dataIndex: 'capabilities',
+                  width: 140,
+                  render: (value: string[]) => (
+                    <Space size={4} wrap>
+                      {(value ?? []).map((item) => (
+                        <Tag key={item}>{item}</Tag>
+                      ))}
+                    </Space>
+                  ),
+                },
+                {
+                  title: '心跳',
+                  dataIndex: 'seconds_since_heartbeat',
+                  width: 120,
+                  render: (value: number | null, row) => {
+                    if (row.status === 'REVOKED') return <Tag>已吊销</Tag>
+                    if (value === null || value === undefined) return <Tag color="warning">从未心跳</Tag>
+                    const minutes = Math.round(value / 60)
+                    return (
+                      <Tag color={minutes > 30 ? 'error' : 'success'}>
+                        {minutes < 1 ? '刚刚' : `${minutes} 分钟前`}
+                      </Tag>
+                    )
+                  },
+                },
+                {
+                  title: '操作',
+                  width: 100,
+                  render: (_, row) =>
+                    row.status === 'REVOKED' ? (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        —
+                      </Text>
+                    ) : (
+                      <Button size="small" danger onClick={() => setRevoking(row.agent_id)}>
+                        吊销
+                      </Button>
+                    ),
+                },
+              ]}
+            />
+          </Card>
+        </Col>
+        <Col span={10}>
+          <Card size="small" title="注册 Agent（凭据只返回一次）">
+            <Form form={form} layout="vertical" initialValues={{ namespace: 'prod', capabilities: 'postgres' }} onFinish={(values) => register.mutate(values)}>
+              <Form.Item name="agentId" label="Agent ID" rules={[{ required: true }]}>
+                <Input placeholder="如 edge-shanghai-01" />
+              </Form.Item>
+              <Form.Item name="displayName" label="显示名">
+                <Input placeholder="上海机房采集器" />
+              </Form.Item>
+              <Form.Item name="namespace" label="命名空间">
+                <Input />
+              </Form.Item>
+              <Form.Item name="capabilities" label="支持的连接器（逗号分隔）">
+                <Input placeholder="postgres,clickhouse" />
+              </Form.Item>
+              <Form.Item name="version" label="Agent 版本">
+                <Input placeholder="0.1.0" />
+              </Form.Item>
+              <Button type="primary" htmlType="submit" loading={register.isPending}>
+                注册并下发凭据
+              </Button>
+            </Form>
+          </Card>
+        </Col>
+      </Row>
+
+      <Card size="small" title="上报记录（区分「没推」与「推了但被拒」）">
+        <Table
+          size="small"
+          rowKey="id"
+          loading={reports.isLoading}
+          dataSource={reports.data?.reports ?? []}
+          pagination={{ pageSize: 8 }}
+          columns={[
+            { title: 'Agent', dataIndex: 'agent_id', width: 180 },
+            { title: '类型', dataIndex: 'report_type', width: 110 },
+            { title: '实体数', dataIndex: 'entity_count', width: 90 },
+            {
+              title: '结果',
+              dataIndex: 'accepted',
+              width: 100,
+              render: (value: boolean) => <Tag color={value ? 'success' : 'error'}>{value ? '接受' : '拒绝'}</Tag>,
+            },
+            {
+              title: '拒绝原因',
+              dataIndex: 'reject_reason',
+              render: (value: string | null) => <Text style={{ fontSize: 12 }}>{value ?? '—'}</Text>,
+            },
+            {
+              title: '时间',
+              dataIndex: 'received_at',
+              width: 170,
+              render: (value: string) => <Text style={{ fontSize: 12 }}>{value?.replace('T', ' ').slice(0, 19)}</Text>,
+            },
+          ]}
+        />
+      </Card>
+
+      <Modal
+        open={credentials !== null}
+        title="凭据只在这里显示一次"
+        width={620}
+        onCancel={() => setCredentials(null)}
+        onOk={() => setCredentials(null)}
+        okText="我已保存"
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="库里只存哈希"
+            description="请让 Agent 从环境变量读取，不要写进配置文件或仓库。"
+          />
+          <Descriptions column={1} size="small" bordered>
+            <Descriptions.Item label="Agent ID">{String(credentials?.agentId ?? '')}</Descriptions.Item>
+            <Descriptions.Item label="凭据">
+              <Text code copyable>
+                {String(credentials?.token ?? '')}
+              </Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="命名空间">{String(credentials?.namespace ?? '')}</Descriptions.Item>
+          </Descriptions>
+          <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
+            {String(credentials?.agentBinary ?? '')}
+          </Paragraph>
+        </Space>
+      </Modal>
+
+      <Modal
+        open={revoking !== null}
+        title={`吊销 Agent「${revoking ?? ''}」的凭据`}
+        onCancel={() => setRevoking(null)}
+        onOk={() => revoke.mutate({ agentId: revoking as string, reason: '管理员在界面吊销' })}
+        confirmLoading={revoke.isPending}
+        okText="确认吊销"
+        okButtonProps={{ danger: true }}
+      >
+        <Text>
+          吊销后该 Agent 的下一次心跳/上报会因凭据无效被拒（401）。
+          <Text strong>历史上报记录会保留</Text>，以便回答「这条元数据是谁在什么时候推上来的」。
+        </Text>
+      </Modal>
     </Space>
   )
 }

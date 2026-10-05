@@ -7,8 +7,10 @@ import {
   AuditOutlined,
   CompassOutlined,
   DatabaseOutlined,
+  RobotOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
+  WarningOutlined,
 } from '@ant-design/icons'
 import { api, getToken, setToken } from './api/client'
 import { useCapabilities } from './hooks/useCapabilities'
@@ -18,6 +20,8 @@ import AssetDetailPage from './pages/AssetDetailPage'
 import LineagePage from './pages/LineagePage'
 import QualityPage from './pages/QualityPage'
 import GovernancePage from './pages/GovernancePage'
+import ObservabilityPage from './pages/ObservabilityPage'
+import AiPage from './pages/AiPage'
 import AdminPage from './pages/AdminPage'
 
 const { Header, Sider, Content } = Layout
@@ -29,7 +33,9 @@ const NAV = [
   { key: '/assets', icon: <DatabaseOutlined />, label: '资产' },
   { key: '/lineage', icon: <ApartmentOutlined />, label: '血缘' },
   { key: '/quality', icon: <SafetyCertificateOutlined />, label: '质量' },
+  { key: '/observability', icon: <WarningOutlined />, label: '可观测' },
   { key: '/governance', icon: <AuditOutlined />, label: '治理' },
+  { key: '/ai', icon: <RobotOutlined />, label: 'AI 与 Agent' },
   { key: '/admin', icon: <SettingOutlined />, label: '管理' },
 ]
 
@@ -109,7 +115,9 @@ export default function App() {
             <Route path="/assets/:urn" element={<AssetDetailPage />} />
             <Route path="/lineage" element={<LineagePage />} />
             <Route path="/quality" element={<QualityPage />} />
+            <Route path="/observability" element={<ObservabilityPage />} />
             <Route path="/governance" element={<GovernancePage />} />
+            <Route path="/ai" element={<AiPage />} />
             <Route path="/admin" element={<AdminPage />} />
             <Route path="*" element={<Navigate to="/discovery" replace />} />
           </Routes>

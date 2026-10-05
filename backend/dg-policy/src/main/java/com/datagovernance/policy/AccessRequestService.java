@@ -32,10 +32,12 @@ public class AccessRequestService {
 
     private final JdbcTemplate jdbc;
     private final MetadataService metadata;
+    private final EngineAuditService engineAudit;
 
-    public AccessRequestService(JdbcTemplate jdbc, MetadataService metadata) {
+    public AccessRequestService(JdbcTemplate jdbc, MetadataService metadata, EngineAuditService engineAudit) {
         this.jdbc = jdbc;
         this.metadata = metadata;
+        this.engineAudit = engineAudit;
     }
 
     // ------------------------------------------------------------------ 申请
@@ -355,9 +357,14 @@ public class AccessRequestService {
     /**
      * 生成复核清单（access review 批次）。
      *
-     * <p>建议结论的计算里，**使用数据缺失会显式返回 NEED_MORE_INFO** ——
-     * 因为本平台尚未接入查询日志（access_event.source=engine 未实现），
-     * 假装"没记录就是没使用"会导致在用的权限被误回收。
+     * <p>使用证据来自 {@link EngineAuditService}（引擎侧真实访问）。
+     * 三种情况下都会返回 {@code NEED_MORE_INFO}，且理由各不相同 ——
+     * 因为"为什么判不了"本身是复核人需要的信息：
+     * <ol>
+     *   <li>**完全没接入**引擎审计；</li>
+     *   <li>接入了，但**观测窗口短于授权时长**（只看了 7 天日志不能否定 200 天前的授权）；</li>
+     *   <li>接入了且窗口够长，但授权**过新**（刚批的授权没被用上很正常）。</li>
+     * </ol>
      */
     public Map<String, Object> reviewCampaign(String campaign, String reviewer, int limit) {
         List<Map<String, Object>> grants = jdbc.queryForList("""
@@ -372,19 +379,35 @@ public class AccessRequestService {
                  LIMIT ?
                 """, campaign, Math.min(Math.max(limit, 1), 200));
 
+        Map<String, Object> window = engineAudit.observationWindow();
+
         List<Map<String, Object>> items = new ArrayList<>();
         for (Map<String, Object> grant : grants) {
-            Object evidence = usageEvidence(String.valueOf(grant.get("resource_urn")),
-                    String.valueOf(grant.get("subject")));
-            Boolean observedUsage = evidence == null ? null : ((Number) ((Map<?, ?>) evidence).get("count")).intValue() > 0;
+            long ageDays = ((Number) grant.get("age_days")).longValue();
+            java.time.Instant grantedAt = grant.get("granted_at") == null ? null
+                    : ((java.sql.Timestamp) grant.get("granted_at")).toInstant();
+            Map<String, Object> evidence = usageEvidence(
+                    String.valueOf(grant.get("resource_urn")), String.valueOf(grant.get("subject")));
+            Boolean observedUsage;
+            if (evidence == null) {
+                observedUsage = null;                       // 没接入：判不了
+            } else if (!engineAudit.coversGrantLife(grantedAt)) {
+                observedUsage = null;                       // 窗口没覆盖授权全生命周期：依然判不了
+            } else if (ageDays < 30) {
+                observedUsage = null;                       // 过新：判不了
+            } else {
+                observedUsage = ((Number) evidence.get("count")).intValue() > 0;
+            }
             AccessRouting.ReviewSuggestion suggestion = AccessRouting.reviewSuggestion(
-                    ((Number) grant.get("age_days")).longValue(), observedUsage, "90d");
+                    ageDays, observedUsage, "90d");
             Map<String, Object> item = new LinkedHashMap<>(grant);
             item.put("suggestedDecision", suggestion.decision());
             item.put("suggestionReason", suggestion.reason());
+            item.put("evidenceWindow", window);
             item.put("evidence", evidence == null
-                    ? Map.of("usageDataAvailable", false,
-                    "note", "未接入查询日志/引擎审计：无法给出使用情况（不假设未使用）")
+                    ? Map.of("usageDataAvailable", false, "observationWindow", window,
+                    "note", "尚未接入引擎审计：无法给出使用情况（不假设未使用）。"
+                            + "接入方式见 GET /api/v1/access/engine-audit/coverage")
                     : evidence);
             items.add(item);
         }
@@ -444,18 +467,27 @@ public class AccessRequestService {
      * **不包含真实查询**（引擎侧的 query log 未接入）。因此返回 null 表示"没有数据"，
      * 而不是"没有使用"。
      */
+    /**
+     * 使用证据：委托给 {@link EngineAuditService}（引擎侧真实访问）。
+     *
+     * <p>返回 {@code null} 表示**根本没有使用数据**（未接入或窗口内无记录），
+     * 调用方必须把它与"用过"和"没用过"区分开 —— 这三者在复核里对应三种不同结论。
+     */
     private Map<String, Object> usageEvidence(String resourceUrn, String subject) {
-        List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT COUNT(*) AS count, MAX(occurred_at) AS last_seen
-                  FROM access_event
-                 WHERE source = 'engine' AND resource_urn = ? AND subject = ?
-                """, resourceUrn, subject);
-        if (rows.isEmpty() || ((Number) rows.get(0).get("count")).intValue() == 0) {
-            return null; // 无引擎侧数据 → 明确"没有数据"，而不是"没有使用"
+        Map<String, Object> window = engineAudit.observationWindow();
+        if (window.get("records") == null || ((Number) window.get("records")).longValue() == 0) {
+            return null;
         }
-        return Map.of("count", rows.get(0).get("count"),
-                "lastSeen", String.valueOf(rows.get(0).get("last_seen")),
-                "usageDataAvailable", true);
+        int windowDays = window.get("windowDays") == null ? 0 : ((Number) window.get("windowDays")).intValue();
+        Map<String, Object> usage = engineAudit.usageEvidence(subject, resourceUrn, Math.max(windowDays, 1));
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("count", usage.getOrDefault("queries", 0));
+        evidence.put("lastSeen", usage.get("last_used_at"));
+        evidence.put("rowsScanned", usage.getOrDefault("rows_scanned", 0));
+        evidence.put("windowDays", Math.max(windowDays, 1));
+        evidence.put("source", "engine_audit_record");
+        evidence.put("usageDataAvailable", true);
+        return evidence;
     }
 
     private Map<String, Object> findRequest(long requestId) {

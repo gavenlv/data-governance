@@ -130,14 +130,18 @@ public final class AccessRouting {
      *
      * <p><b>没有使用数据时必须显式说明</b>，而不是默认"看起来没被用过" ——
      * 那会导致复核人凭感觉回收，把在用的权限砍掉。
+     *
+     * @param observedUsage {@code null} 表示**证据不足**（未接入引擎审计、观测窗口短于授权时长、
+     *                      或授权过新），调用方必须把理由写清楚，而不是压成"未使用"
      */
     public static ReviewSuggestion reviewSuggestion(long grantedDaysAgo, Boolean observedUsage,
                                                     String reviewIntervalDays) {
         if (observedUsage == null) {
             return new ReviewSuggestion("NEED_MORE_INFO",
-                    "缺少使用数据：无法判断该授权是否仍被使用。"
-                            + "本平台尚未接入查询日志/引擎审计（access_event.source=engine 未实现），"
-                            + "因此这里**不假设「未使用」**，请向申请人确认或从引擎侧查证后再决定");
+                    "缺少可判定的使用证据：无法判断该授权是否仍被使用。"
+                            + "可能是尚未接入引擎审计、观测窗口短于授权时长，或授权过新。"
+                            + "这里**不假设「未使用」** —— 请向申请人确认或从引擎侧查证后再决定"
+                            + "（接入与覆盖情况见 GET /api/v1/access/engine-audit/coverage）");
         }
         if (!observedUsage && grantedDaysAgo >= 90) {
             return new ReviewSuggestion("REVOKE",

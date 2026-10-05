@@ -37,6 +37,19 @@ public record CapabilityDescriptor(
                 doc, "-", summary, List.of());
     }
 
+    /**
+     * 已实现能力的重载：允许附「验证证据 / 已知边界」说明。
+     *
+     * <p>之所以需要它：IMPLEMENTED 不等于「没有边界」。像「MCP 只实现核心子集」
+     * 「建议引擎的确定性部分已实现、大模型部分需配置」这类事实必须随能力一起暴露，
+     * 否则界面只能显示"已实现"，使用者会误以为规范全量覆盖。
+     */
+    public static CapabilityDescriptor implemented(String id, String name, String domain,
+                                                   String doc, String summary, List<String> notes) {
+        return new CapabilityDescriptor(id, name, domain, CapabilityStatus.IMPLEMENTED,
+                doc, "-", summary, notes);
+    }
+
     public static CapabilityDescriptor partial(String id, String name, String domain,
                                                String doc, String phase, String summary,
                                                List<String> notes) {

@@ -14,6 +14,7 @@
     "Dataset",
     "Domain",
     "GlossaryTerm",
+    "Metric",
     "Pipeline",
     "Platform",
     "QualityRule",
@@ -359,6 +360,58 @@
       "required": [],
       "additionalProperties": false
     },
+    "aspect.metricSpec": {
+      "type": "object",
+      "properties": {
+        "metricName": {
+          "title": "metricName",
+          "type": "string"
+        },
+        "metricType": {
+          "title": "metricType",
+          "type": "string",
+          "enum": [
+            "SIMPLE",
+            "RATIO",
+            "DERIVED",
+            "CUMULATIVE"
+          ],
+          "default": "SIMPLE"
+        },
+        "expression": {
+          "title": "expression",
+          "type": "string"
+        },
+        "sourceFormat": {
+          "title": "sourceFormat",
+          "type": "string",
+          "enum": [
+            "dg",
+            "dbt",
+            "cube"
+          ],
+          "default": "dg"
+        },
+        "physicalColumns": {
+          "title": "physicalColumns",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dimensions": {
+          "title": "dimensions",
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "metricName"
+      ],
+      "additionalProperties": false
+    },
     "aspect.ownership": {
       "type": "object",
       "properties": {
@@ -527,6 +580,49 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "aspect.termSpec": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "title": "definition",
+          "type": "string"
+        },
+        "synonyms": {
+          "title": "synonyms",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "title": "status",
+          "type": "string",
+          "enum": [
+            "DRAFT",
+            "APPROVED",
+            "DEPRECATED"
+          ],
+          "default": "DRAFT"
+        },
+        "steward": {
+          "title": "steward",
+          "type": "string"
+        },
+        "relatedTerms": {
+          "title": "relatedTerms",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sourceRef": {
+          "title": "sourceRef",
+          "type": "string"
         }
       },
       "required": [],

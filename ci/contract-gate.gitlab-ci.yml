@@ -1,0 +1,83 @@
+# ============================================================================
+# 数据治理门禁 · GitLab CI 组件模板
+#
+# 用法（在项目的 .gitlab-ci.yml 里 include 本文件并设置变量）：
+#
+#   include:
+#     - local: 'ci/contract-gate.gitlab-ci.yml'
+#
+#   variables:
+#     DG_API_BASE_URL: "https://governance.example.com"
+#     DG_API_TOKEN: $GOVERNANCE_TOKEN        # 在 Settings → CI/CD → Variables 里配置（Masked）
+#     CONTRACT_FILE: "contracts/dwd_orders.yaml"
+#     CONTRACT_NAMESPACE: "prod"
+#
+# 设计要点与 GitHub Action 一致：
+#   1. 判定来自**平台**（兼容性 + 血缘影响面 + 治理属性），不是本地静态检查；
+#   2. 平台不可达时默认"不阻断 + 报告里写明未执行"，需要严格模式设 FAIL_CLOSED=true；
+#   3. 回写 MR 评论失败**不会**让任务失败（否则团队会直接删掉这一步）。
+# ============================================================================
+
+variables:
+  CONTRACT_FILE: "contracts/example_event_log.yaml"
+  CONTRACT_NAMESPACE: "prod"
+  DG_API_BASE_URL: "http://127.0.0.1:8081"
+  REQUIRE_OWNER: "true"
+  REQUIRE_DESCRIPTION: "true"
+  REQUIRE_CLASSIFICATION: "true"
+  REQUIRE_NO_UNDETECTED_CONSUMERS: "false"
+  ALLOW_BREAKING: "false"
+  FAIL_CLOSED: "false"
+  COMMENT_ON_MR: "true"
+  DG_CI_SOURCE: "gitlab"
+  PYTHON_IMAGE: "python:3.12-slim"
+
+.contract-gate-base:
+  image: $PYTHON_IMAGE
+  before_script:
+    - pip install --quiet pyyaml
+  script:
+    - |
+      set +e
+      flags=""
+      [ "$ALLOW_BREAKING" = "true" ] && flags="$flags --allow-breaking"
+      [ "$REQUIRE_OWNER" = "true" ] && flags="$flags --require-owner"
+      [ "$REQUIRE_DESCRIPTION" = "true" ] && flags="$flags --require-description"
+      [ "$REQUIRE_CLASSIFICATION" = "true" ] && flags="$flags --require-classification"
+      [ "$REQUIRE_NO_UNDETECTED_CONSUMERS" = "true" ] && flags="$flags --require-no-undetected-consumers"
+      [ "$FAIL_CLOSED" = "true" ] && flags="$flags --fail-closed"
+
+      python tools/ci/contract_gate.py \
+        --contract "$CONTRACT_FILE" --namespace "$CONTRACT_NAMESPACE" \
+        --report-file gate-report.md --json-out gate-result.json $flags
+      code=$?
+
+      echo "=== 门禁报告 ==="
+      cat gate-report.md || true
+      exit $code
+  artifacts:
+    when: always
+    paths:
+      - gate-report.md
+      - gate-result.json
+    expire_in: 90 days
+
+# 在 MR 上跑门禁并回写评论。回写用 `|| true` 保证"评论没发出去"不会让门禁变红。
+contract-gate:mr:
+  extends: .contract-gate-base
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  after_script:
+    - |
+      if [ "$COMMENT_ON_MR" = "true" ] && [ -n "$CI_MERGE_REQUEST_IID" ] && [ -f gate-report.md ]; then
+        python tools/ci/pr_comment.py --provider gitlab --report gate-report.md \
+          --project "$CI_PROJECT_ID" --mr "$CI_MERGE_REQUEST_IID" || true
+      fi
+
+# 默认分支上只跑门禁、不评论（主干没有 MR 可回写）。
+contract-gate:main:
+  extends: .contract-gate-base
+  stage: test
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

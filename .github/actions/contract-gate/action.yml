@@ -1,0 +1,130 @@
+name: 'Data Governance Contract Gate'
+description: '契约兼容性 + 血缘影响面 + 治理属性齐备的一次性门禁（判定来自平台，不是本地静态检查）'
+author: 'data-governance-platform'
+
+# 复合 Action：不打包成 Docker 镜像，因为门禁要读工作区里的契约文件、
+# 且需要在任意 runner（含自建、离线环境）上跑 —— 复合 Action 是唯一同时满足这两点的形态。
+
+inputs:
+  contract:
+    description: '契约文件路径（ODCS 兼容 YAML/JSON）'
+    required: true
+  namespace:
+    description: '平台命名空间'
+    required: false
+    default: 'prod'
+  base-url:
+    description: '平台地址'
+    required: false
+    default: 'http://127.0.0.1:8081'
+  token:
+    description: '平台访问令牌（放 secrets，不要写进仓库）'
+    required: true
+  allow-breaking:
+    description: '允许破坏性变更（需 PR 已评审；判定仍会留痕）'
+    required: false
+    default: 'false'
+  require-owner:
+    description: '要求契约里有 Owner'
+    required: false
+    default: 'true'
+  require-description:
+    description: '要求契约里有描述'
+    required: false
+    default: 'true'
+  require-classification:
+    description: '要求契约里有分级'
+    required: false
+    default: 'true'
+  require-no-undetected-consumers:
+    description: '要求没有"血缘上在用但没登记"的消费者'
+    required: false
+    default: 'false'
+  fail-closed:
+    description: '平台不可达时判为失败（默认不阻断但会在报告里写明"未执行"）'
+    required: false
+    default: 'false'
+  comment:
+    description: '是否把结论回写到 PR 评论'
+    required: false
+    default: 'true'
+  python:
+    description: 'python 可执行文件'
+    required: false
+    default: 'python3'
+
+outputs:
+  verdict:
+    description: 'PASS / WARN / BLOCK / UNEXECUTED'
+    value: ${{ steps.gate.outputs.verdict }}
+  exit-code:
+    description: '门禁退出码（0 通过 / 1 阻断）'
+    value: ${{ steps.gate.outputs.exit_code }}
+  report:
+    description: 'Markdown 报告文件路径'
+    value: ${{ steps.gate.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: 安装依赖
+      shell: bash
+      run: ${{ inputs.python }} -m pip install --quiet pyyaml
+
+    - name: 运行门禁
+      id: gate
+      shell: bash
+      env:
+        DG_API_TOKEN: ${{ inputs.token }}
+        DG_API_BASE_URL: ${{ inputs.base-url }}
+        DG_CI_SOURCE: github
+        CONTRACT: ${{ inputs.contract }}
+        NAMESPACE: ${{ inputs.namespace }}
+      run: |
+        set +e
+        flags=""
+        [ "${{ inputs.allow-breaking }}" = "true" ] && flags="$flags --allow-breaking"
+        [ "${{ inputs.require-owner }}" = "true" ] && flags="$flags --require-owner"
+        [ "${{ inputs.require-description }}" = "true" ] && flags="$flags --require-description"
+        [ "${{ inputs.require-classification }}" = "true" ] && flags="$flags --require-classification"
+        [ "${{ inputs.require-no-undetected-consumers }}" = "true" ] && flags="$flags --require-no-undetected-consumers"
+        [ "${{ inputs.fail-closed }}" = "true" ] && flags="$flags --fail-closed"
+
+        ${{ inputs.python }} tools/ci/contract_gate.py \
+          --contract "$CONTRACT" --namespace "$NAMESPACE" \
+          --report-file gate-report.md --json-out gate-result.json $flags
+        code=$?
+        echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+        verdict=$(python3 -c "import json;print(json.load(open('gate-result.json')).get('verdict','UNEXECUTED'))" 2>/dev/null || echo UNEXECUTED)
+        echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+        echo "report=gate-report.md" >> "$GITHUB_OUTPUT"
+        exit $code
+
+    - name: 写入 Job Summary
+      if: always()
+      shell: bash
+      run: |
+        if [ -f gate-report.md ]; then
+          cat gate-report.md >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    # 回写失败**不**让整步失败：CI 里"因为回写没成功导致门禁红"会直接导致这一步被删掉
+    - name: 回写 PR 评论
+      if: always() && inputs.comment == 'true' && github.event.pull_request.number != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        ${{ inputs.python }} tools/ci/pr_comment.py --provider github \
+          --report gate-report.md --repo "${{ github.repository }}" \
+          --pr "${{ github.event.pull_request.number }}" --token "$GH_TOKEN" || true
+
+    - name: 上传报告（归档用）
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: contract-gate-report
+        path: |
+          gate-report.md
+          gate-result.json
+        if-no-files-found: warn

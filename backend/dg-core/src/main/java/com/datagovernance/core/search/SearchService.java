@@ -51,10 +51,12 @@ public class SearchService {
         List<Object> whereParams = new ArrayList<>(visibleLevels);
 
         String trimmed = query == null ? "" : query.trim();
-        boolean hasQuery = !trimmed.isEmpty();
+        // 查询侧必须做与写入侧**相同**的中文二元切分，否则写入切了、查询没切，中文检索依然是坏的
+        String tokenizedQuery = IdentifierTokenizer.tokenizeQuery(trimmed);
+        boolean hasQuery = !tokenizedQuery.isBlank();
         if (hasQuery) {
             where.append(" AND tsv @@ plainto_tsquery('simple', ?)");
-            whereParams.add(trimmed);
+            whereParams.add(tokenizedQuery);
         }
         if (entityType != null && !entityType.isBlank()) {
             where.append(" AND entity_type = ?");
@@ -76,7 +78,7 @@ public class SearchService {
         String order;
         if (hasQuery) {
             order = " ORDER BY ts_rank(tsv, plainto_tsquery('simple', ?)) DESC, indexed_at DESC, urn";
-            resultParams.add(trimmed);
+            resultParams.add(tokenizedQuery);
         } else {
             order = " ORDER BY indexed_at DESC, urn";
         }

@@ -1,4 +1,4 @@
-package com.datagovernance.lineage;
+package com.datagovernance.core.resolve;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -10,19 +10,20 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * 把 SQL 里的表名解析为平台内的 Dataset URN（docs/09 §9.2）。
+ * 把外部系统给的"裸表名"解析成平台 URN。
  *
- * <p>解析顺序（命中即返回）：
+ * <p>为什么这件事必须是**一个**实现：同一张表在 SQL 解析（血缘）与引擎审计（真实访问）里
+ * 若用两套解析规则，就会出现"血缘认出来了、审计没认出来"的不一致 ——
+ * 而依据这些解析结果做判断的正是**复核与回收**。因此本类放在 dg-core，由两个模块共用。
+ *
+ * <p>解析策略（保守优先，宁可返回 null 也不猜）：
  * <ol>
- *   <li>已经是平台 URN → 直接用</li>
- *   <li>完整路径 {@code ns.platform.db.schema.table}（5 段）→ 直接构造</li>
- *   <li>URN 后缀匹配 {@code %.db.schema.table}（要求唯一）</li>
- *   <li>按 display_name 精确匹配（要求唯一）</li>
+ *   <li>已经是平台 URN → 直接返回；</li>
+ *   <li>恰好 5 段（platform.database.schema.table 的变体）→ 直接按 URN 规则构造；</li>
+ *   <li>否则按**后缀**在命名空间内唯一匹配（`catalog.schema.table` / `schema.table`）；</li>
+ *   <li>再退一步按 display_name 唯一匹配；</li>
+ *   <li>0 条或多条命中都返回 null（多义即不解析）。</li>
  * </ol>
- *
- * <p><b>解析不到就返回 null —— 绝不猜</b>。跨 schema 同名表存在歧义时宁可缺边：
- * 一条错的血缘会让人在排查故障时走向错误的方向，代价远高于缺一条边。
- * 缺边会被计入 {@code unresolvedTables} 并在解析质量报告里可见。
  */
 @Component
 public class TableResolver {

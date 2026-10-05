@@ -6,6 +6,7 @@ import java.util.Map;
 
 import com.datagovernance.ingestion.connectors.BigQuerySource;
 import com.datagovernance.ingestion.connectors.ClickHouseSource;
+import com.datagovernance.ingestion.connectors.DbtManifestSource;
 import com.datagovernance.ingestion.connectors.MongoSource;
 import com.datagovernance.ingestion.connectors.PostgresSource;
 import com.datagovernance.ingestion.connectors.SupersetSource;
@@ -64,6 +65,11 @@ public class ConnectorRegistry {
                 "REST /api/v1/dashboard + /api/v1/dataset；产出仪表板实体与 "
                         + "Dashboard→Dataset 的 readsFrom 边；虚拟数据集不猜血缘（交给 sqlglot）",
                 "superset://user:pass@host:8088"));
+        out.add(info("dbt", "dbt（manifest.json）", "dataset", true,
+                "读 target/manifest.json：model/seed/snapshot/source 全部成为数据集资产（含列、描述、"
+                        + "物化方式、tags），并产出**编译期确定的血缘**（depends_on，表级，置信度 1.0）；"
+                        + "列级血缘需把 compiled_code 交给 sqlglot 侧车",
+                "dbt:///path/to/dbt/project（或直接指向 manifest.json）"));
         return out;
     }
 
@@ -73,7 +79,6 @@ public class ConnectorRegistry {
         out.put("mysql", Map.of("note", "计划中：与 PostgreSQL 连接器结构相同，信息模式查询可复用"));
         out.put("trino", Map.of("note", "计划中：可复用 trino 的 information_schema + 系统表"));
         out.put("hive-hms", Map.of("note", "计划中：需要 HMS Thrift 客户端"));
-        out.put("dbt", Map.of("note", "计划中：读 manifest.json（编译期血缘最准），与契约/测试天然同源"));
         out.put("airflow", Map.of("note", "计划中：REST API 读 DAG 与任务依赖"));
         out.put("sqlite", Map.of("note", "计划中：Python 参考实现已有（sqlite_master + PRAGMA）"));
         out.put("duckdb", Map.of("note", "计划中：Python 参考实现已有（含 Parquet/CSV 裸文件 schema 推断）"));
@@ -118,6 +123,11 @@ public class ConnectorRegistry {
             case "bigquery", "bq" -> BigQuerySource.fromDsn(dsn, databases, tables);
             case "superset" -> SupersetSource.fromDsn(dsn, request.namespace(),
                     (schema, table) -> resolveDatasetUrn(schema, table, request.namespace()), tables);
+            case "dbt" -> DbtManifestSource.fromDsn(dsn, request.namespace(),
+                    // 与 Superset 共用同一套解析规则（表名 → 平台 URN）：
+                    // 两个连接器用两套规则，会导致"同一张表在 BI 血缘里认得、在 dbt 血缘里认不得"
+                    (database, schema, table) -> resolveDatasetUrn(schema, table, request.namespace()),
+                    tables);
             default -> throw new IllegalArgumentException("不支持的 source：" + source
                     + "（已实现：" + implemented().stream().map(item -> item.get("id")).toList() + "）");
         };

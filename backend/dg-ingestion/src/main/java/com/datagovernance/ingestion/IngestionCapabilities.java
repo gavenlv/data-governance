@@ -32,6 +32,17 @@ public class IngestionCapabilities implements CapabilityProvider {
                                         + "缺凭据时给出可读错误而不是静默返回空数据集）",
                                 "未实现：MySQL / Trino / Hive-HMS / dbt manifest / Airflow / SQLite / DuckDB / Tableau",
                                 "连接器状态由 ConnectorRegistry 单点声明，界面与接口共用（避免'界面上有、实际不支持'）")),
+                CapabilityDescriptor.implemented("ingestion.edge-agent", "Edge Agent（推模式）", "D1 元数据底座",
+                        "ADR-012",
+                        "**控制面侧已实现**：Agent 注册（一次性下发凭据，库里只存哈希）、心跳、"
+                                + "数据集+列上报（走同一套 URN 形状与来源保护 AUTO_COLLECTED，自动进入检索索引与血缘图）、"
+                                + "凭据吊销（立即生效且保留历史上报记录）、上报记录可查（被拒必带原因，"
+                                + "**超限拒绝而不截断** —— 截断会让人误以为推成功了）",
+                        List.of("已实现：推模式的**协议与控制面**（e2e 覆盖 注册→心跳→上报→吊销→拒收超限）",
+                                "**未实现：ADR-012 选型的 Go 单二进制 Agent 本体** —— 它需要独立的构建与发布流水线，"
+                                        + "不在本仓库范围内；任何能发 HTTP 的采集器（脚本 / cron / k8s Job）现在就能用",
+                                "未实现：gRPC 流式上报、Agent 侧本地缓存与断点续传、Agent 自动升级",
+                                "安全设计：Agent 凭据只在下发时返回一次；吊销只改状态、不删历史上报（可追溯）")),
                 CapabilityDescriptor.implemented("ingestion.bi-assets", "BI 资产采集（仪表板）", "D1 元数据底座",
                         "docs/09 §9.1",
                         "BI 资产作为一等实体（Dashboard + dashboardSpec）：图表清单、URL、依赖数据集、Owner；"
@@ -43,11 +54,6 @@ public class IngestionCapabilities implements CapabilityProvider {
                         "docs/09 §9.1",
                         "cron 调度采集任务（5 段/6 段均可，自动归一化）；互斥用 pg_try_advisory_lock"
                                 + "（随连接释放、崩溃不留死锁，多副本安全）；每次执行写 collect_run 可被观测；"
-                                + "凭证不落明文（env: 引用，secret: 显式拒绝）"),
-                CapabilityDescriptor.notImplemented("ingestion.edge-agent", "Edge Agent（推模式）", "D1 元数据底座",
-                        "ADR-012", "Phase 2",
-                        "数据侧 Agent：私有子网/数据不出域场景下的采集与上报",
-                        List.of("文档选型为 Go 单二进制，尚未实现",
-                                "企业网络隔离是硬约束，落地时应优先于更多连接器")));
+                                + "凭证不落明文（env: 引用，secret: 显式拒绝）"));
     }
 }

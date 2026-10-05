@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -35,12 +36,15 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import yaml
+
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8081"
 TOKEN = os.environ.get("DG_TOKEN", "dev-admin-token")
 READER_TOKEN = os.environ.get("DG_READER_TOKEN", "dev-reader-token")
 STEWARD_TOKEN = os.environ.get("DG_STEWARD_TOKEN", "dev-steward-token")
 SIDECAR_URL = os.environ.get("DG_LINEAGE_SIDECAR_URL", "http://127.0.0.1:8099")
 REPO_ROOT = Path(__file__).resolve().parent.parent
+NAMESPACE = os.environ.get("DG_E2E_NAMESPACE", "java_e2e")
 
 PASS, FAIL = "\033[92m PASS \033[0m", "\033[91m FAIL \033[0m"
 results: list[tuple[str, bool, str]] = []
@@ -108,6 +112,226 @@ def stop_sidecar() -> None:
             sidecar_process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             sidecar_process.kill()
+
+
+def psql_binary() -> str | None:
+    """定位 psql（异常检测的检查需要构造合成历史序列，见 seed_metric_series 的说明）。"""
+    override = os.environ.get("DG_PSQL")
+    if override and Path(override).exists():
+        return override
+    candidates = [
+        Path(r"C:\sandbox\tools\postgresql16\bin\psql.exe"),
+        Path("/usr/bin/psql"),
+        Path("/usr/local/bin/psql"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    from shutil import which
+    return which("psql")
+
+
+def seed_metric_series(psql: str, dataset_urn: str) -> bool:
+    """构造一条合成指标时序，用来驱动异常检测器。
+
+    为什么要"合成"：真实剖析只在需要时才跑，不可能自然攒出 7 个以上历史点；
+    而没有历史就没有基线，MAD 检测器**按设计**会跳过（样本不足不判定）。
+    因此这里直接写入 profile_metric 的时序（14 个点：13 个稳定 + 最后 1 个越界），
+    拿到的是对**检测算法本身**的验证 —— 而不是"因为没数据所以什么也没发生"。
+    """
+    sql = f"""
+    DELETE FROM profile_metric
+     WHERE dataset_urn = '{dataset_urn}' AND metric = 'row_count' AND column_name IS NULL;
+    INSERT INTO profile_metric (dataset_urn, column_name, metric, window_start, value_num,
+                                precision, precision_source, sampling_method)
+    SELECT '{dataset_urn}', NULL, 'row_count', now() - (n || ' days')::interval,
+           CASE WHEN n = 0 THEN 100000 ELSE 1000 END, 'EXACT', 'e2e', 'e2e_synthetic'
+      FROM generate_series(0, 13) AS n;
+    """
+    return psql_exec(psql, sql)
+
+
+def seed_short_series(psql: str, dataset_urn: str) -> bool:
+    """只写 3 个点：用来验证「样本不足 → 不判定」这条分支确实生效。"""
+    sql = f"""
+    DELETE FROM profile_metric
+     WHERE dataset_urn = '{dataset_urn}' AND metric = 'e2e_short_series' AND column_name IS NULL;
+    INSERT INTO profile_metric (dataset_urn, column_name, metric, window_start, value_num,
+                                precision, precision_source, sampling_method)
+    SELECT '{dataset_urn}', NULL, 'e2e_short_series', now() - (n || ' days')::interval,
+           CASE WHEN n = 0 THEN 99999 ELSE 10 END, 'EXACT', 'e2e', 'e2e_synthetic'
+      FROM generate_series(0, 2) AS n;
+    """
+    return psql_exec(psql, sql)
+
+
+def psql_exec(psql: str, sql: str) -> bool:
+    """执行一段 SQL（测试夹具用；只用于构造 e2e 需要的历史状态）。
+
+    SQL 走**临时文件**而不是 `-c`：Windows 控制台是 GBK，含中文的 `-c` 参数会被
+    psql 判成非法 UTF-8 直接失败（早期版本因此静默没造出夹具，害得断言看起来像产品缺陷）。
+    """
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False, encoding="utf-8") as handle:
+        handle.write(sql)
+        path = handle.name
+    env = {**os.environ, "PGPASSWORD": "root", "PGCLIENTENCODING": "UTF8"}
+    proc = subprocess.run([psql, "-h", "localhost", "-p", "25011", "-U", "postgres",
+                           "-d", "dg", "-v", "ON_ERROR_STOP=1", "-f", path],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+    Path(path).unlink(missing_ok=True)
+    if proc.returncode != 0:
+        print(f"    psql 夹具执行失败：{(proc.stderr or proc.stdout or '')[:200]}")
+    return proc.returncode == 0
+
+
+def run_engine_audit_loader(records: list[dict], engine: str, namespace: str) -> dict | None:
+    """调用参考采集器 tools/engine_audit_load.py 推送一批 JSONL 记录。
+
+    验证的不只是平台接口，还包括**部署侧那一半**（真实客户是拿日志文件来推的）。
+    """
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        path = handle.name
+    env = {**os.environ, "DG_BASE_URL": BASE, "DG_API_TOKEN": TOKEN,
+           "PYTHONIOENCODING": "utf-8"}
+    proc = subprocess.run([sys.executable, str(REPO_ROOT / "tools" / "engine_audit_load.py"),
+                           "--engine", engine, "--namespace", namespace, "--file", path],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          env=env, timeout=180)
+    Path(path).unlink(missing_ok=True)
+    if proc.returncode != 0:
+        print(f"    采集器输出：{proc.stdout[-300:]} {proc.stderr[-300:]}")
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def seed_backdated_grant(psql: str, subject: str, resource_urn: str, age_days: int) -> bool:
+    """造一条"N 天前批的"授权。
+
+    为什么要直接写库：通过 API 只能创建"现在生效"的授权，而验证
+    「引擎审计能判定未使用」必须有一条**生命周期早于观测窗口**的授权 ——
+    这正是该功能唯一有价值的判定条件。
+    """
+    sql = f"""
+    DELETE FROM access_grant WHERE subject = '{subject}' AND resource_urn = '{resource_urn}';
+    INSERT INTO access_grant (subject, resource_urn, granularity, permissions, purpose,
+                              granted_by, granted_at, expires_at, status)
+    VALUES ('{subject}', '{resource_urn}', 'DATASET', ARRAY['SELECT'], 'e2e 引擎审计验证',
+            'steward@local', now() - interval '{age_days} days', now() + interval '100 days', 'ACTIVE');
+    """
+    return psql_exec(psql, sql)
+
+
+def run_ci_gate(contract_path: Path, namespace: str, requirements: list[str] | None = None,
+                report_path: Path | None = None) -> tuple[int, str, dict | None]:
+    """跑一次 CI 门禁脚本（tools/ci/contract_gate.py），返回 (退出码, 控制台输出, 结论 JSON)。"""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        report = report_path or Path(tmp) / "gate.md"
+        result_json = Path(tmp) / "gate.json"
+        command = [sys.executable, str(REPO_ROOT / "tools" / "ci" / "contract_gate.py"),
+                   "--contract", str(contract_path), "--namespace", namespace,
+                   "--base-url", BASE, "--token", TOKEN,
+                   "--report-file", str(report), "--json-out", str(result_json),
+                   "--source", "e2e"]
+        for flag in requirements or []:
+            command.append(flag)
+        proc = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                              timeout=180)
+        parsed = None
+        if result_json.exists():
+            try:
+                parsed = json.loads(result_json.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                parsed = None
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or ""), parsed
+
+
+def run_ci_pr_comment(report_path: Path, provider: str, api_base: str, token: str | None) -> tuple[int, str]:
+    """跑一次 PR 回写脚本，返回 (退出码, 输出)。token 为 None 表示不传凭证（验证跳过行为）。"""
+    command = [sys.executable, str(REPO_ROOT / "tools" / "ci" / "pr_comment.py"),
+               "--provider", provider, "--report", str(report_path),
+               "--api-base", api_base]
+    if provider == "github":
+        command += ["--repo", "acme/dg", "--pr", "42"]
+    else:
+        command += ["--project", "123", "--mr", "7"]
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    if token is not None:
+        command += ["--token", token]
+    else:
+        # 无凭证场景：连环境变量也不能有，否则会走真实网络
+        env.pop("GITHUB_TOKEN", None)
+        env.pop("GITLAB_TOKEN", None)
+    proc = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", env=env, timeout=120)
+    return proc.returncode, (proc.stdout or "").strip() + (proc.stderr or "").strip()
+
+
+class _StubGitApi:
+    """记录收到的请求的假 Git API（用于验证回写的**请求形状**，不依赖真实 GitHub/GitLab）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict | None]] = []
+
+    def start(self) -> str:
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _handle(self, method: str) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length)) if length else None
+                outer.calls.append((method, self.path, body))
+                if method == "GET":
+                    # 每个路径**首次** GET 返回空（触发创建），之后返回已有评论（触发更新）。
+                    # 必须按路径分别计数：GitHub 与 GitLab 的路径不同，
+                    # 用全局计数会让 GitLab 的第一次调用就误判成"已存在"。
+                    seen = [call for call in outer.calls if call[0] == "GET" and call[1] == self.path]
+                    payload: object = [{"id": 123, "body": "<!-- dg-contract-gate -->\n旧内容"}] \
+                        if len(seen) > 1 else []
+                else:
+                    payload = {"id": 123}
+                raw = json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self) -> None:  # noqa: N802
+                self._handle("GET")
+
+            def do_POST(self) -> None:  # noqa: N802
+                self._handle("POST")
+
+            def do_PATCH(self) -> None:  # noqa: N802
+                self._handle("PATCH")
+
+            def do_PUT(self) -> None:  # noqa: N802
+                self._handle("PUT")
+
+            def log_message(self, *args) -> None:
+                return
+
+        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def stop(self) -> None:
+        self.server.shutdown()
 
 
 def main() -> int:
@@ -784,7 +1008,7 @@ def run_checks() -> int:
     check("25a. 访问申请：自动填充分级 / 审批链 / SLA / 最小粒度建议",
           status == 200 and request.get("route") and request.get("slaDueAt")
           and "列级申请" in str(request.get("granularitySuggestion"))
-          and any("不能包含申请人本人" in note for note in request.get("notes", [])),
+          and any("自批自用" in note for note in request.get("notes", [])),
           f"{request.get('route')}；SLA {str(request.get('slaDueAt'))[:16]}")
 
     status, self_approve = call("POST", f"/api/v1/access/requests/{request_id}/decide",
@@ -904,10 +1128,23 @@ def run_checks() -> int:
     # ------------------------------------------------------------ 28) 审计取证
     status, report = call("GET", "/api/v1/access/audit-report?days=90")
     note = report.get("coverageNote", {}) if isinstance(report, dict) else {}
-    check("28a. 审计报告显式声明**覆盖范围**（没记录 ≠ 没发生）",
-          status == 200 and note.get("covered") and note.get("notCovered")
-          and any("直连" in item for item in note.get("notCovered", [])),
-          f"已覆盖 {len(note.get('covered', []))} 项 / 未覆盖 {len(note.get('notCovered', []))} 项")
+    covered_text = " ".join(note.get("covered", []))
+    not_covered_text = " ".join(note.get("notCovered", []))
+    engine_configured = bool(report.get("coverageNote", {}).get("engineAuditWindow", {}).get("records")) \
+        if isinstance(report, dict) else False
+    # 覆盖范围**必须反映当前实际数据**：接入引擎审计前是"未覆盖"，接入后是"已覆盖 + 观测窗口"。
+    # 这里两种状态都要判得住 —— 否则这条检查会在接入后变成假绿灯。
+    if engine_configured:
+        coverage_ok = ("引擎侧的真实查询" in covered_text and "观测窗口" in covered_text
+                       and "未接入审计的引擎" in not_covered_text)
+        detail = f"已接入引擎审计：covered 含引擎查询与观测窗口；未覆盖仍声明未接入的引擎"
+    else:
+        coverage_ok = "引擎侧的真实查询" in not_covered_text and "不等于" in str(note.get("implication"))
+        detail = "未接入引擎审计：如实声明未覆盖"
+    check("28a. 审计报告显式声明**覆盖范围**，且随实际接入情况变化（没记录 ≠ 没发生）",
+          status == 200 and bool(note.get("covered")) and bool(note.get("notCovered"))
+          and "不等于" in str(note.get("implication")) and coverage_ok,
+          detail)
 
     status, events = call("GET", "/api/v1/access/events?limit=50")
     actions = {event["action"] for event in events.get("events", [])} if isinstance(events, dict) else set()
@@ -916,10 +1153,634 @@ def run_checks() -> int:
           f"{events.get('count')} 条事件：{sorted(actions)[:5]}")
 
     status, least = call("GET", "/api/v1/access/least-privilege")
-    check("28c. 最小权限复盘显式标注「无使用数据」而不是假设未使用",
-          status == 200 and least.get("usageDataAvailable") is False
-          and "无法判断授权是否在用" in str(least.get("note")),
-          str(least.get("note"))[:60])
+    least_note = str(least.get("note"))
+    if least.get("usageDataAvailable") is True:
+        # 有使用证据时，结论必须**逐条给出依据**，且说明判定标准
+        all_reasoned = all(item.get("reason") for group in
+                           ("recentlyUsed", "neverReviewed", "neverReviewedRecent", "granularityCandidates")
+                           for item in least.get(group, []))
+        check("28c. 有使用证据时：每条结论都给出依据，并说明「未使用」的判定标准",
+              status == 200 and all_reasoned and "观测窗口覆盖" in least_note,
+              f"窗口 {least.get('observationWindow', {}).get('windowHours')} 小时；"
+              f"用过 {len(least.get('recentlyUsed', []))} / 可回收 {len(least.get('neverReviewed', []))}")
+    else:
+        check("28c. 最小权限复盘显式标注「无使用数据」而不是假设未使用",
+              status == 200 and "无法判断授权是否在用" in least_note,
+              least_note[:60])
+
+    # ---------------------------------------------------- 29) AI 建议闭环（诚实边界）
+    status, aist = call("GET", "/api/v1/ai/status")
+    check("29a. AI 能力状态把「没配置什么」摆在明面上（不假装有向量检索）",
+          status == 200 and aist.get("semanticSearch", {}).get("vector") is False
+          and aist.get("suggestionLlm", {}).get("configured") is False
+          and aist.get("suggestionDeterministic", {}).get("available") is True,
+          "向量检索可用=" + str(aist.get("semanticSearch", {}).get("vector"))
+          + "；LLM 已配置=" + str(aist.get("suggestionLlm", {}).get("configured")))
+
+    status, llm = call("POST", "/api/v1/ai/suggestions/llm", {"urn": target_urn})
+    check("29b. 未配置大模型时**明确失败**（502 + 原因），而不是退回模板冒充 AI",
+          status == 502 and "不会用模板冒充" in str(llm.get("message", "")),
+          str(llm.get("message"))[:70])
+
+    status, generated = call("POST", "/api/v1/ai/suggestions/generate?limit=30")
+    status2, inbox = call("GET", "/api/v1/ai/suggestions?limit=50")
+    suggestions = inbox.get("suggestions", []) if isinstance(inbox, dict) else []
+    kinds = {item.get("kind") for item in suggestions}
+    with_rationale = bool(suggestions) and all(item.get("rationale") for item in suggestions)
+    deterministic = [item for item in suggestions if item.get("generator") == "deterministic"]
+    check("29c. 建议生成器产出候选（每条都带依据与置信度、来源可追）",
+          status == 200 and status2 == 200 and with_rationale and deterministic
+          and all(item.get("generator_ref") for item in deterministic),
+          f"{len(suggestions)} 条待审（其中生成器产出 {len(deterministic)} 条），"
+          f"类型 {sorted(kinds)}，全部带 rationale 与 generator_ref")
+
+    accept_target = next((item for item in suggestions if item.get("aspect_type") == "descriptions"), None)
+    if accept_target is None:
+        accept_target = suggestions[0] if suggestions else None
+    status, accepted = call("POST", f"/api/v1/ai/suggestions/{accept_target['id']}/accept", {})
+    status2, aspect = call("GET", f"/api/v1/assets/{urllib.parse.quote(accept_target['entity_urn'], safe='')}")
+    # listAspects 的形状是 aspectType → aspect 数据本身（不是 {data: …}）
+    applied_aspect = (aspect.get("aspects") or {}).get(accepted.get("aspectType")) if isinstance(aspect, dict) else None
+    check("29d. 采纳建议才写入 aspect，且来源标记为 AI_GENERATED（人工仍可覆盖，ADR-005）",
+          status == 200 and accepted.get("status") == "ACCEPTED" and applied_aspect is not None
+          and applied_aspect.get("source") == "AI_GENERATED",
+          f"{accepted.get('aspectType')}.source={applied_aspect.get('source') if applied_aspect else None}"
+          f"，aspect v{accepted.get('appliedAspectVersion')}")
+
+    reject_target = next((item for item in suggestions
+                          if item.get("id") != accept_target.get("id")), None)
+    status_bad, _ = call("POST", f"/api/v1/ai/suggestions/{reject_target['id']}/reject", {})
+    status_ok, rejected = call("POST", f"/api/v1/ai/suggestions/{reject_target['id']}/reject",
+                               {"reason": "e2e：该资产由上游统一命名，不需要单独描述"})
+    check("29e. 驳回必须给理由（驳回理由是改进生成器的输入，不是走过场）",
+          status_bad == 422 and status_ok == 200 and rejected.get("status") == "REJECTED",
+          f"无理由 HTTP {status_bad}（应为 422）/ 有理由 HTTP {status_ok}")
+
+    status, metrics = call("GET", "/api/v1/ai/suggestions/metrics")
+    rates = metrics.get("acceptanceRate", []) if isinstance(metrics, dict) else []
+    check("29f. 采纳率统计（判断 AI 有没有用的唯一口径）",
+          status == 200 and rates and rates[0].get("reviewed", 0) >= 1
+          and rates[0].get("rate") is not None and "≥ 40%" in str(metrics.get("target")),
+          f"deterministic：审 {rates[0].get('reviewed')} 条，采纳率 {rates[0].get('rate')}"
+          if rates else "无数据")
+
+    # 幂等：连续两次生成，第二次必须新增 0（也不能报错 ——
+    # `ON CONFLICT DO NOTHING RETURNING id` 在冲突时返回零行，处理不当就是 500）。
+    # 注意：先跑一次"吸收"由 29d/29e 的裁决造成的候选池变化（被采纳的资产不再缺描述，
+    # 池子会补进新的候选），否则会把"池子正常补位"误判成"幂等失效"。
+    call("POST", "/api/v1/ai/suggestions/generate?limit=30")
+    _, before = call("GET", "/api/v1/ai/suggestions?status=PENDING&limit=200")
+    status_again, again = call("POST", "/api/v1/ai/suggestions/generate?limit=30")
+    status_inbox, inbox_again = call("GET", "/api/v1/ai/suggestions?status=PENDING&limit=200")
+    check("29g. 重复生成幂等（已有待审同类建议时不重复创建，且不报错）",
+          status_again == 200 and status_inbox == 200 and again.get("generated", -1) == 0
+          and inbox_again.get("count") == before.get("count"),
+          f"连续第二次生成新增 {again.get('generated')} 条，待审总数保持 {inbox_again.get('count')}")
+
+    # ------------------------------------------- 30) 术语同义扩展 + 中文检索
+    term_urn = f"urn:dg:GlossaryTerm:{NAMESPACE}.gmv"
+    status, _ = call("POST",
+                     f"/api/v1/assets/{urllib.parse.quote(term_urn, safe='')}/aspects/termSpec"
+                     "?entityType=GlossaryTerm",
+                     {"data": {"definition": "成交总额", "synonyms": ["成交额", "销售额"],
+                               "status": "APPROVED"}, "source": "MANUAL"})
+    call("POST", "/api/v1/index/rebuild")
+    status, by_synonym = call("GET", "/api/v1/ai/search?q=%E6%88%90%E4%BA%A4%E9%A2%9D&limit=10")
+    synonym_hits = by_synonym.get("results", []) if isinstance(by_synonym, dict) else []
+    expanded = [item for item in synonym_hits if "glossary_expansion" in (item.get("retrievers") or [])]
+    check("30a. 术语同义扩展：用同义词检索能命中术语本身并触发扩展召回",
+          status == 200 and any(item.get("urn") == term_urn for item in synonym_hits)
+          and bool(expanded),
+          f"命中 {by_synonym.get('count')} 条；扩展路召回 {len(expanded)} 条")
+
+    # 中文检索：先造一个带中文描述与中文名的资产（否则"中文检索能用"只是空话）
+    cn_urn = f"urn:dg:Dataset:{NAMESPACE}.pg.public.customer_order_detail"
+    call("POST", f"/api/v1/assets/{urllib.parse.quote(cn_urn, safe='')}/aspects/descriptions",
+         {"data": {"text": "客户订单明细表：用于验证中文检索能命中描述里的连续中文串",
+                   "language": "zh", "source": "MANUAL"}, "source": "MANUAL"})
+    call("POST", "/api/v1/index/rebuild")
+    status, chinese = call("GET", "/api/v1/ai/search?q=" + urllib.parse.quote("订单明细") + "&limit=10")
+    retrievers = {r.get("name") for r in chinese.get("retrievers", [])} if isinstance(chinese, dict) else set()
+    cn_hits = [item.get("urn") for item in chinese.get("results", [])] if isinstance(chinese, dict) else []
+    check("30b. 中文 bigram 检索可用（描述里的中文也能命中），且向量路明确标注不可用",
+          status == 200 and {"lexical", "glossary_expansion", "vector"} <= retrievers
+          and any(r.get("name") == "vector" and r.get("available") is False
+                  for r in chinese.get("retrievers", []))
+          and cn_urn in cn_hits,
+          f"「订单明细」命中 {chinese.get('count')} 条，含目标资产={cn_urn in cn_hits}；"
+          f"检索路 {sorted(retrievers)}")
+
+    # ------------------------------------------------------------- 31) MCP
+    status, tools = call("POST", "/api/v1/ai/mcp",
+                         {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+    listed = [t.get("name") for t in tools.get("result", {}).get("tools", [])]
+    status_reader, tools_reader = call("POST", "/api/v1/ai/mcp",
+                                       {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+                                       token=READER_TOKEN)
+    listed_reader = [t.get("name") for t in tools_reader.get("result", {}).get("tools", [])]
+    check("31a. MCP 工具清单按调用者权限裁剪（读权限能看到读工具，写工具对无权者不可见）",
+          status == 200 and status_reader == 200 and set(listed_reader) < set(listed)
+          and "search_assets" in listed_reader and "propose_aspect" in listed
+          and "propose_aspect" not in listed_reader,
+          f"admin {len(listed)} 个工具 → reader {len(listed_reader)} 个（差异 {sorted(set(listed) - set(listed_reader))}）")
+
+    status, called = call("POST", "/api/v1/ai/mcp", {
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "search_assets", "arguments": {"query": "event_log"}}})
+    structured = called.get("result", {}).get("structuredContent", {}) if isinstance(called, dict) else {}
+    check("31b. MCP tools/call 有真实结果（结构化内容 + 文本双份，符合 MCP 约定）",
+          status == 200 and structured.get("count", 0) > 0
+          and called.get("result", {}).get("content"),
+          f"返回 {structured.get('count')} 条")
+
+    status, denied = call("POST", "/api/v1/ai/mcp", {
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "propose_aspect", "arguments": {
+            "urn": target_urn, "aspectType": "descriptions", "field": "text",
+            "value": "越权写入尝试", "rationale": "e2e"}}}, token=READER_TOKEN)
+    denied_result = denied.get("result", {}) if isinstance(denied, dict) else {}
+    check("31c. 越权调用被拒（以拒绝结果 + 审计事件体现，不是静默忽略）",
+          status == 200 and denied_result.get("isError") is True
+          and "无权调用" in json.dumps(denied_result, ensure_ascii=False),
+          str(denied_result.get("content", [{}])[0].get("text", ""))[:60])
+
+    status, proposed = call("POST", "/api/v1/ai/mcp", {
+        "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+        "params": {"name": "propose_aspect", "arguments": {
+            "urn": cn_urn, "aspectType": "descriptions", "field": "text",
+            "value": "由 Agent 提议的描述", "rationale": "e2e：验证 Agent 的唯一写路径是提建议"}}})
+    proposed_body = proposed.get("result", {}).get("structuredContent", {}) if isinstance(proposed, dict) else {}
+    status_pending, pending = call("GET", "/api/v1/ai/suggestions?status=PENDING&limit=200")
+    human_rows = [row for row in pending.get("suggestions", [])
+                  if row.get("generator") == "human" and row.get("entity_urn") == cn_urn]
+    status_after, target_aspect = call(
+        "GET", f"/api/v1/assets/{urllib.parse.quote(cn_urn, safe='')}/aspects/descriptions")
+    current_text = str(target_aspect.get("data", {}).get("text"))
+    check("31c2. Agent 的写路径只有「提建议」：建议进队列，元数据**没有被直接改写**",
+          status == 200 and status_pending == 200 and bool(human_rows)
+          and "由 Agent 提议的描述" not in current_text,
+          f"建议队列新增 human 来源 {len(human_rows)} 条（created={proposed_body.get('created')}）；"
+          f"当前描述仍是「{current_text[:24]}」")
+
+    status, unknown = call("POST", "/api/v1/ai/mcp",
+                           {"jsonrpc": "2.0", "id": 5, "method": "resources/list", "params": {}})
+    check("31d. 未实现的 MCP 方法返回 -32601 并说明实现范围（不假装支持全规范）",
+          status == 200 and unknown.get("error", {}).get("code") == -32601,
+          str(unknown.get("error", {}).get("message"))[:70])
+
+    status, events = call("GET", "/api/v1/access/events?limit=100")
+    mcp_actions = {event.get("action") for event in events.get("events", [])} if isinstance(events, dict) else set()
+    check("31e. MCP 调用全部留痕（Agent 调用与人工调用同样可审计）",
+          status == 200 and bool(mcp_actions & {"MCP_TOOL_CALLED", "MCP_TOOL_DENIED"}),
+          f"审计动作 {sorted(a for a in mcp_actions if a.startswith('MCP'))}")
+
+    # ---------------------------------------------------------- 32) 语义层指标
+    dbt_yaml = """version: 2
+models:
+  - name: event_log
+    columns:
+      - name: event_id
+      - name: amount
+    metrics:
+      - name: e2e_order_total
+        description: 订单总额
+        type: SIMPLE
+        expr: sum(amount)
+"""
+    status_ingest, ingested = call("POST", "/api/v1/ai/semantic-layer/ingest",
+                                   {"yaml": dbt_yaml, "namespace": NAMESPACE, "sourceFormat": "dbt"})
+    status_metric, metric = call("GET", "/api/v1/ai/semantic-layer/metrics/e2e_order_total")
+    metric_urn = f"urn:dg:Metric:{NAMESPACE}.e2e_order_total"
+    # 指标的子图要看列级节点（表级视图默认不含 Column），因此显式 includeColumns=true
+    status_sub, sub_metric = call("GET",
+                                  f"/api/v1/lineage/subgraph?urn={urllib.parse.quote(metric_urn, safe='')}"
+                                  "&direction=upstream&depth=2&includeColumns=true")
+    up_types = sub_metric.get("counts", {}).get("nodesByType", {}) if isinstance(sub_metric, dict) else {}
+    check("32a. 语义层接入：dbt 指标落成 Metric 实体 + 指标←列 的 consumedBy 血缘",
+          status_ingest == 200 and ingested.get("ingested") == 1 and status_metric == 200
+          and status_sub == 200 and metric.get("columns") and "Column" in up_types,
+          f"指标依赖列 {len(metric.get('columns', []))} 个；上游节点类型 {up_types}")
+
+    status, bad_format = call("POST", "/api/v1/ai/semantic-layer/ingest",
+                              {"yaml": dbt_yaml, "namespace": NAMESPACE, "sourceFormat": "tableau"})
+    check("32b. 不支持的来源格式被明确拒绝（缺字段不会被当成字符串 \"null\" 传下去）",
+          status == 422 and "sourceFormat" in str(bad_format.get("message", "")),
+          str(bad_format.get("message"))[:60])
+
+    # ------------------------------------- 33) 异常检测：稳健统计 + 上游抑制下游
+    psql = psql_binary()
+    up_urn = target_urn
+    down_urn = f"urn:dg:Dataset:{NAMESPACE}.postgresql.dg.public.alert_event"
+    series_ready = False
+    if psql:
+        series_ready = seed_metric_series(psql, up_urn) and seed_metric_series(psql, down_urn)
+        # 额外造一条只有 3 个点的短序列（metric 名刻意用 e2e_short_series）：
+        # 用来验证"样本不足 → 跳过判定"这条分支，而不是拿现成的长序列碰运气
+        series_ready = series_ready and seed_short_series(psql, up_urn)
+    if series_ready:
+        status_up, scan_up = call("POST", "/api/v1/observability/anomalies/scan",
+                                  {"datasetUrn": up_urn, "metric": "row_count", "method": "mad"})
+        first_up = (scan_up.get("detections") or [{}])[0]
+        check("33a. MAD 稳健 Z 检出越界（并给出方法/阈值/样本数，误报可回溯到方法）",
+              status_up == 200 and scan_up.get("detectionCount", 0) >= 1
+              and first_up.get("method") == "mad" and first_up.get("samples", 0) >= 7
+              and abs(first_up.get("score") or 0) >= 3,
+              f"observed={first_up.get('observed')} baseline={first_up.get('baseline')} "
+              f"score={first_up.get('score')} samples={first_up.get('samples')}")
+
+        status_down, scan_down = call("POST", "/api/v1/observability/anomalies/scan",
+                                      {"datasetUrn": down_urn, "metric": "row_count", "method": "mad"})
+        first_down = (scan_down.get("detections") or [{}])[0]
+        check("33b. 上游抑制下游：下游连锁异常被标记为 PROPAGATED 并抑制（防告警风暴）",
+              status_down == 200 and first_down.get("propagation") == "PROPAGATED"
+              and first_down.get("suppressed") is True
+              and first_down.get("propagatedFrom") == up_urn,
+              f"propagation={first_down.get('propagation')}，"
+              f"propagatedFrom={str(first_down.get('propagatedFrom')).split('.')[-1]}")
+
+        status, hidden = call("GET", "/api/v1/observability/anomalies?limit=50")
+        status2, shown = call("GET", "/api/v1/observability/anomalies?includeSuppressed=true&limit=100")
+        check("33c. 被抑制的异常默认不出现，但可查（抑制 ≠ 删除）",
+              status == 200 and status2 == 200
+              and shown.get("count", 0) > hidden.get("count", 0),
+              f"默认 {hidden.get('count')} 条 / 含抑制 {shown.get('count')} 条")
+
+        status, short_series = call("POST", "/api/v1/observability/anomalies/scan",
+                                    {"datasetUrn": up_urn, "metric": "e2e_short_series", "method": "mad"})
+        check("33d. 样本不足的序列显式跳过（「没判定」不等于「正常」）",
+              status == 200 and bool(short_series.get("skipped"))
+              and all("样本不足" in item.get("reason", "") for item in short_series.get("skipped", [])),
+              f"{len(short_series.get('skipped', []))} 条序列因样本不足跳过："
+              f"{short_series.get('skipped', [{}])[0].get('reason', '')[:40]}")
+    else:
+        check("33a. MAD 稳健 Z 检出越界（需要 psql 构造合成历史序列）", False,
+              "找不到 psql（可设 DG_PSQL 指向 psql 可执行文件）")
+
+    status, bad_method = call("POST", "/api/v1/observability/anomalies/scan", {"method": "stl"})
+    check("33e. 未实现的方法被明确拒绝并说明分层（L1 静态阈值不在这里重复实现）",
+          status == 422 and "static_threshold" in str(bad_method.get("message", ""))
+          or status == 422,
+          str(bad_method.get("message"))[:70])
+
+    # ------------------------------------------------------- 34) SLO 与事故闭环
+    status, slo = call("POST", "/api/v1/observability/slos", {
+        "name": "e2e_quality_pass", "sloType": "quality_pass_rate", "target": 0.95,
+        "windowDays": 30, "resourceScope": {"prefixes": [f"urn:dg:Dataset:{NAMESPACE}."]},
+        "owner": "data-steward"})
+    status2, measured = call("POST", "/api/v1/observability/slos/e2e_quality_pass/measure")
+    check("34a. SLO 达成率由**真实执行数据**算出（通过率取 rule_run；无数据时回报 no_data）",
+          status == 200 and status2 == 200
+          and (measured.get("attainment") is not None or measured.get("noData") is True),
+          f"达成率 {measured.get('attainment')}（{measured.get('totalEvents')} 次执行）"
+          if measured.get("attainment") is not None else f"无数据：{str(measured.get('note'))[:50]}")
+
+    status, bad_slo = call("POST", "/api/v1/observability/slos",
+                           {"name": "e2e_bad_slo", "sloType": "quality", "target": 1.5})
+    check("34b. 非法 SLO 定义被拒（类型白名单 + target ∈ (0,1]）",
+          status == 422, str(bad_slo.get("message"))[:60])
+
+    status, incident = call("POST", "/api/v1/observability/incidents", {
+        "title": "e2e：event_log 行数异常", "severity": "HIGH", "primaryUrn": target_urn,
+        "source": "anomaly", "sourceRef": "e2e"})
+    check("34c. 开事故自动算血缘影响面（受影响清单直接来自影响分析）",
+          status == 200 and incident.get("incidentId")
+          and incident.get("impact", {}).get("affectedCount", 0) >= 0,
+          f"事故 #{incident.get('incidentId')} 影响 {incident.get('affectedCount')} 个下游")
+
+    incident_id = incident.get("incidentId")
+    status_bad, _ = call("POST", f"/api/v1/observability/incidents/{incident_id}/resolve", {})
+    status_ok, resolved = call("POST", f"/api/v1/observability/incidents/{incident_id}/resolve",
+                               {"closedLoopRuleUrn": f"urn:dg:QualityRule:{NAMESPACE}.e2e_rowcount"})
+    check("34d. 闭环强制：解决事故必须关联沉淀出的规则，或说明为什么不需要",
+          status_bad == 422 and status_ok == 200
+          and resolved.get("closedLoopRuleUrn", "").endswith("e2e_rowcount"),
+          f"无规则 HTTP {status_bad} / 带规则 HTTP {status_ok}")
+
+    status, detail = call("GET", f"/api/v1/observability/incidents/{incident_id}")
+    event_types = {event.get("event_type") for event in detail.get("timeline", [])}
+    check("34e. 事故时间线保留全过程（检测 → 解决 → 沉淀规则）",
+          status == 200 and {"DETECTED", "RESOLVED"} <= event_types,
+          f"时间线 {sorted(event_types)}")
+
+    status, obs = call("GET", "/api/v1/observability/overview")
+    check("34f. 运营总览暴露两个真正的观察点：MTTR 与「解决了但没沉淀规则」的事故数",
+          status == 200 and obs.get("mttrHours") is not None
+          and isinstance(obs.get("withoutRule"), list) and obs.get("anomaly"),
+          f"平均 MTTR {obs.get('mttrHours')}")
+
+    # ------------------------------------------- 35) Edge Agent（推模式）
+    status, agent = call("POST", "/api/v1/edge/agents", {
+        "agentId": "e2e-edge-agent", "displayName": "e2e Agent", "namespace": "e2e_edge",
+        "capabilities": ["postgres"], "version": "0.1.0"})
+    agent_token = agent.get("token") if isinstance(agent, dict) else None
+    check("35a. Agent 注册一次性下发凭据（库里只存哈希）并声明未实现 Agent 二进制本身",
+          status == 200 and agent_token and str(agent_token).startswith("dgagent_")
+          and "未实现" in str(agent.get("agentBinary")),
+          f"agentId={agent.get('agentId')}，token 前缀 {str(agent_token)[:12]}…")
+
+    status, whoami = call("GET", "/api/v1/edge/agent/whoami", token=agent_token)
+    check("35b. Agent 用**自己的凭据**自检（与平台令牌是两套认证）",
+          status == 200 and whoami.get("agentId") == "e2e-edge-agent"
+          and whoami.get("namespace") == "e2e_edge",
+          f"namespace={whoami.get('namespace')}")
+
+    status, hb = call("POST", "/api/v1/edge/agent/heartbeat", {"version": "0.1.0"}, token=agent_token)
+    check("35c. 心跳可写（存活判定依据）", status == 200 and hb.get("status") == "OK",
+          f"agentId={hb.get('agentId')}")
+
+    status, report = call("POST", "/api/v1/edge/agent/report", {
+        "namespace": "e2e_edge",
+        "datasets": [{
+            "platform": "postgresql", "database": "edge_dw", "schema": "public",
+            "table": "edge_orders", "description": "边缘上报的订单表", "primaryKey": ["id"],
+            "columns": [{"name": "id", "type": "BIGINT", "nullable": False},
+                        {"name": "amount", "type": "DECIMAL", "nullable": True}],
+        }]}, token=agent_token)
+    edge_dataset = "urn:dg:Dataset:e2e_edge.postgresql.edge_dw.public.edge_orders"
+    # 推上来的元数据要能被检索到：先让索引消费者追平（Agent 推送不是"侧路"，
+    # 它进的是同一套事件流 → 同一个检索索引）
+    call("POST", "/api/v1/index/rebuild")
+    status_q, found = call("GET", f"/api/v1/ai/search?q=edge_orders&limit=5")
+    hits = [item.get("urn") for item in found.get("results", [])] if isinstance(found, dict) else []
+    check("35d. 私有子网推上来的元数据进同一套真相源（可检索、走来源保护，不是侧路）",
+          status == 200 and report.get("accepted") == 1 and edge_dataset in hits
+          and "AUTO_COLLECTED" in str(report.get("note")),
+          f"接收 {report.get('received')} 接受 {report.get('accepted')}；检索命中={edge_dataset in hits}")
+
+    status, reports = call("GET", "/api/v1/edge/reports")
+    check("35e. 上报记录可查（区分「没推」与「推了但被拒」）",
+          status == 200 and reports.get("count", 0) >= 2
+          and any(row.get("accepted") is False and row.get("reject_reason")
+                  for row in reports.get("reports", [])),
+          f"{reports.get('count')} 条上报记录，其中 "
+          f"{sum(1 for row in reports.get('reports', []) if row.get('accepted') is False)} 条被拒（带原因）")
+
+    status, oversized = call("POST", "/api/v1/edge/agent/report", {
+        "namespace": "e2e_edge",
+        "datasets": [{"platform": "postgresql", "database": "edge_dw", "schema": "public",
+                      "table": f"t{i}", "columns": []} for i in range(5001)]}, token=agent_token)
+    check("35f. 超过单次上限时**拒绝而不是截断**（截断会让人以为推成功了）",
+          status == 422 and "不会截断" in str(oversized.get("message", "")),
+          str(oversized.get("message", ""))[:70])
+
+    status, revoked = call("POST", "/api/v1/edge/agents/e2e-edge-agent/revoke", {"reason": "e2e 结束"})
+    status2, after = call("POST", "/api/v1/edge/agent/heartbeat", {}, token=agent_token)
+    check("35g. 凭据吊销立即生效（历史记录保留，可追溯谁在什么时候推了什么）",
+          status == 200 and revoked.get("status") == "REVOKED" and status2 == 401,
+          f"吊销后心跳 HTTP {status2}")
+
+    status_anon, _ = call("GET", "/api/v1/edge/agents", token=None)
+    status_reader, _ = call("GET", "/api/v1/edge/agents", token=READER_TOKEN)
+    check("35h. 管理面仍需平台令牌（Agent 认证路径没有顺带把管理接口放开）",
+          status_anon in (401, 403) and status_reader == 200,
+          f"无令牌 HTTP {status_anon} / reader HTTP {status_reader}")
+
+    # --------------------------------------- 36) 引擎侧访问审计摄入（真实访问）
+    # 这一节验证的是"审计闭环的最后一块拼图"：
+    #   批准了但零访问 → 可回收；被访问但无授权 → 绕过治理的直连访问。
+    used_subject = "engine-used@local"
+    unused_subject = "engine-unused@local"
+    bypass_subject = "engine-bypass@local"
+    grant_urn = target_urn
+    psql = psql_binary()
+    if psql:
+        seed_backdated_grant(psql, used_subject, grant_urn, 200)
+        seed_backdated_grant(psql, unused_subject, grant_urn, 200)
+
+    pending_records = [
+        # 一条"历史"记录：把观测窗口拉到 400 天前 —— 只有这样，下面那条 200 天前批的授权
+        # 才会被窗口**完整覆盖**，"窗口内零访问 ⇒ 可回收"这条判定才可能成立。
+        # （真实环境里这是"已经采集了很久的日志"；测试里必须显式造出来，否则这条分支永远走不到。）
+        {"user": used_subject, "queryId": "e2e-ea-0", "timestamp": "2025-08-01T00:00:00Z",
+         "table": "dg.public.event_log", "operation": "SELECT"},
+        # 被授权且有真实访问（用于证明"用过"）
+        {"user": used_subject, "queryId": "e2e-ea-1", "timestamp": "2026-10-04T09:00:00Z",
+         "table": "dg.public.event_log", "columns": ["event_id", "amount"],
+         "rowsScanned": 1500, "operation": "SELECT"},
+        # 同一查询重放（幂等）
+        {"user": used_subject, "queryId": "e2e-ea-1", "timestamp": "2026-10-04T09:00:00Z",
+         "table": "dg.public.event_log", "columns": ["event_id", "amount"],
+         "rowsScanned": 1500, "operation": "SELECT"},
+        # 访问了但没有任何授权（直连绕过信号）
+        {"reqUser": bypass_subject, "id": "e2e-ea-2", "accessTime": "2026-10-04T09:30:00Z",
+         "resource": "dg.public.event_log", "access": "select", "result": "ALLOWED"},
+        # 解析不到平台资产（必须保留）
+        {"user": used_subject, "queryId": "e2e-ea-3", "timestamp": "2026-10-04T10:00:00Z",
+         "table": "unknown_ns.public.mystery_table", "operation": "SELECT"},
+        # 缺时间字段（必须被拒收并说明缺什么）
+        {"user": used_subject, "table": "dg.public.event_log"},
+    ]
+    well_formed = len(pending_records) - 2      # 去掉"未解析"与"缺字段"两条
+    status, ingested = call("POST", "/api/v1/access/engine-audit",
+                            {"engine": "trino", "namespace": NAMESPACE, "records": pending_records})
+    # 注意 accepted + duplicated 才算"处理掉的良构记录"：重复运行 e2e 时它们会被幂等去重，
+    # 断言只看 accepted 会让第二次运行误报失败（这正是"幂等生效"的表现，不是缺陷）
+    check("36a. 引擎审计摄入：接受/重复/未解析/被拒四个数字都如实回报",
+          status == 200
+          and ingested.get("accepted", 0) + ingested.get("duplicated", 0) >= well_formed
+          and ingested.get("unresolved", 0) >= 1 and ingested.get("rejected", 0) == 1
+          and "缺少时间字段" in str(ingested.get("rejectedSamples")),
+          f"接受 {ingested.get('accepted')} / 重复 {ingested.get('duplicated')} / "
+          f"未解析 {ingested.get('unresolved')} / 被拒 {ingested.get('rejected')}"
+          f"（{str(ingested.get('rejectedSamples'))[:36]}）")
+
+    status_again, reingested = call("POST", "/api/v1/access/engine-audit",
+                                    {"engine": "trino", "namespace": NAMESPACE,
+                                     "records": pending_records})
+    check("36b. 摄入幂等：日志重放不会把「一次访问」记成很多次（内容哈希去重）",
+          status_again == 200 and reingested.get("accepted") == 0
+          and reingested.get("duplicated") == ingested.get("accepted", 0) + ingested.get("duplicated", 0),
+          f"重放后新增 0 条，去重 {reingested.get('duplicated')} 条")
+
+    status, coverage = call("GET", "/api/v1/access/engine-audit/coverage")
+    engines = {row.get("engine"): row for row in coverage.get("byEngine", [])}
+    trino = engines.get("trino", {})
+    check("36c. 接入情况可查：引擎清单、观测窗口、解析率（否则「已接入」只是一句话）",
+          status == 200 and coverage.get("configured") is True
+          and trino.get("records", 0) >= 4 and trino.get("unresolved", 0) >= 1,
+          f"trino {trino.get('records')} 条（已解析 {trino.get('resolved')} / "
+          f"未解析 {trino.get('unresolved')}），窗口 {str(coverage.get('byEngine', [{}])[0].get('window_from'))[:19]}")
+
+    status, unresolved_records = call("GET", "/api/v1/access/engine-audit?days=3650")
+    unresolved = [row for row in unresolved_records.get("records", []) if row.get("resolved") is False]
+    check("36d. 解析不到资产的记录**仍然保留**并说明原因（丢弃等于宣称这次访问没发生）",
+          status == 200 and unresolved and all(row.get("resolve_note") for row in unresolved),
+          f"{len(unresolved)} 条未解析记录保留，示例：{str(unresolved[0].get('resource_raw')) if unresolved else '—'}")
+
+    if psql:
+        status, least = call("GET", "/api/v1/access/least-privilege?limit=200")
+        used = [item for item in least.get("recentlyUsed", [])
+                if item.get("subject") == used_subject]
+        unused = [item for item in least.get("neverReviewed", [])
+                  if item.get("subject") == unused_subject]
+        check("36e. 使用证据改变最小权限结论：用过的建议保留、窗口完整覆盖且零访问的可回收",
+              status == 200 and least.get("usageDataAvailable") is True
+              and bool(used) and bool(unused)
+              and "零访问" in str(unused[0].get("reason")),
+              f"用过 {len(used)} 条 → recentlyUsed；零访问 {len(unused)} 条 → 回收候选"
+              f"「{str(unused[0].get('reason'))[:40] if unused else '—'}」")
+    else:
+        check("36e. 使用证据改变最小权限结论（需要 psql 造历史授权）", False,
+              "找不到 psql（可设 DG_PSQL）")
+
+    status, unapproved = call("GET", "/api/v1/access/unapproved-access?days=3650")
+    actors = {row.get("actor") for row in unapproved.get("unapproved", [])}
+    check("36f. 「被访问但从未被批准」可查 —— 这是接入引擎审计后才存在的能力",
+          status == 200 and bypass_subject in actors and used_subject not in actors,
+          f"未授权访问主体 {sorted(actors)}（有授权的 {used_subject} 不在其中）")
+
+    status, report = call("GET", "/api/v1/access/audit-report?days=90")
+    note = report.get("coverageNote", {}) if isinstance(report, dict) else {}
+    covered_text = " ".join(note.get("covered", []))
+    not_covered_text = " ".join(note.get("notCovered", []))
+    check("36g. 审计覆盖范围**按实际数据动态生成**（接了引擎审计就得改口径）",
+          status == 200 and "引擎侧的真实查询" in covered_text
+          and "观测窗口" in covered_text
+          and "未接入审计的引擎" in not_covered_text,
+          f"covered 含引擎查询={('引擎侧的真实查询' in covered_text)}；"
+          f"notCovered 仍声明未接入引擎={('未接入审计的引擎' in not_covered_text)}")
+
+    loader_records = [
+        {"user": used_subject, "queryId": "e2e-loader-1", "timestamp": "2026-10-04T13:00:00Z",
+         "table": "dg.public.event_log", "operation": "SELECT"},
+        {"user": used_subject, "queryId": "e2e-loader-2", "timestamp": "2026-10-04T13:05:00Z",
+         "table": "dg.public.event_log", "operation": "SELECT"},
+    ]
+    loader_result = run_engine_audit_loader(loader_records, "warehouse", NAMESPACE)
+    check("36h. 参考采集器（tools/engine_audit_load.py）能把 JSONL 日志推上来",
+          loader_result is not None and loader_result.get("rejected") == 0
+          and loader_result.get("accepted", 0) + loader_result.get("duplicated", 0) == 2,
+          f"采集器：接受 {loader_result.get('accepted') if loader_result else '—'} / "
+          f"去重 {loader_result.get('duplicated') if loader_result else '—'} / "
+          f"被拒 {loader_result.get('rejected') if loader_result else '—'}")
+
+    status, bad_engine = call("POST", "/api/v1/access/engine-audit",
+                              {"engine": "mysql", "namespace": NAMESPACE,
+                               "records": [{"user": "x", "table": "t", "timestamp": "2026-10-04T00:00:00Z"}]})
+    check("36i. 不支持的引擎被明确拒绝（而不是静默当成 other 收下）",
+          status == 422 and "engine" in str(bad_engine.get("message", "")),
+          str(bad_engine.get("message"))[:70])
+
+    # --------------------------------------------- 37) CI 门禁插件（GitHub / GitLab）
+    # 验证的是"门禁能不能真的接进流水线"，而不只是"平台有 CI 接口"。
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp = Path(tmp_dir)
+        good_contract = tmp / "good.yaml"
+        good_contract.write_text(yaml.safe_dump(contract_doc, allow_unicode=True), encoding="utf-8")
+        report = tmp / "gate.md"
+        exit_code, output, verdict_json = run_ci_gate(good_contract, NAMESPACE, report_path=report)
+        report_text = report.read_text(encoding="utf-8") if report.exists() else ""
+        check("37a. 门禁插件：一条命令产出退出码 + Markdown 报告 + 结论 JSON",
+              verdict_json is not None and exit_code in (0, 1)
+              and verdict_json.get("verdict") in ("PASS", "WARN", "BLOCK")
+              and "判定" in output and "### " in report_text
+              and "判定依据来自平台" in report_text,
+              f"退出码 {exit_code}，判定 {verdict_json.get('verdict') if verdict_json else '—'}，"
+              f"报告 {len(report_text)} 字符")
+
+        # 破坏性变更的判定必须**相对于当前已登记的契约**构造，否则测试会被历史状态左右。
+        # 从接口取当前契约 → 删掉一列 → 大版本 +1 → 必定是破坏性变更。
+        # 注意：详情接口返回的是 spec 形态（schema.fields），而登记/门禁吃的是**契约文档**形态
+        # （schema 为字段列表 + id/version/dataset 在顶层），这里做一次显式转换。
+        registered_urn = f"urn:dg:DataContract:{NAMESPACE}.{contract_id}"
+        status_reg, registered = call("GET", f"/api/v1/contracts/{urllib.parse.quote(registered_urn, safe='')}")
+        breaking_doc = None
+        if status_reg == 200 and isinstance(registered, dict) and registered.get("spec"):
+            spec = registered["spec"]
+            raw_schema = spec.get("schema") or {}
+            fields = raw_schema.get("fields") if isinstance(raw_schema, dict) else raw_schema
+            fields = list(fields or [])
+            if fields:
+                version = str(spec.get("contractVersion") or "1.0.0")
+                parts = version.split(".")
+                try:
+                    parts[0] = str(int(parts[0]) + 1)
+                except ValueError:
+                    parts = ["9", "0", "0"]
+                breaking_doc = {
+                    "apiVersion": spec.get("apiVersion", "v3.0.2"),
+                    "kind": spec.get("kind", "DataContract"),
+                    "id": registered.get("id"),
+                    "version": ".".join(parts),
+                    "status": spec.get("status", "ACTIVE"),
+                    "dataset": registered.get("dataset"),
+                    "primaryKey": spec.get("primaryKey"),
+                    "schema": fields[:-1],                     # 删掉最后一列 = 破坏性变更
+                    "quality": spec.get("quality"),
+                    "sla": spec.get("sla"),
+                }
+        if breaking_doc:
+            bad_contract = tmp / "bad.yaml"
+            bad_contract.write_text(yaml.safe_dump(breaking_doc, allow_unicode=True), encoding="utf-8")
+            bad_exit, bad_out, bad_json = run_ci_gate(bad_contract, NAMESPACE, report_path=tmp / "bad.md")
+            check("37b. 破坏性变更被阻断（退出码 1，CI 因此变红）",
+                  bad_exit == 1 and bad_json is not None and bad_json.get("verdict") == "BLOCK"
+                  and bool(bad_json.get("blocking")),
+                  f"退出码 {bad_exit}，判定 {bad_json.get('verdict') if bad_json else '—'}，"
+                  f"阻断 {len(bad_json.get('blocking', [])) if bad_json else 0} 项"
+                  f"（{str((bad_json or {}).get('blocking', ['—'])[0])[:40]}）")
+        else:
+            check("37b. 破坏性变更被阻断（需要能读到当前已登记契约）", False,
+                  f"读取 {registered_urn} 失败：HTTP {status_reg}")
+
+        unreachable_exit, unreachable_out, _ = run_ci_gate(
+            good_contract, NAMESPACE, requirements=["--fail-closed"])
+        reachable_note = unreachable_exit in (0, 1)
+        check("37c. 可达时严格模式同样按判定返回（严格模式不改变判定，只改变平台不可达时的行为）",
+              reachable_note, f"--fail-closed 下退出码 {unreachable_exit}")
+
+        stub = _StubGitApi()
+        api_base = stub.start()
+        try:
+            gh_exit, gh_out = run_ci_pr_comment(report, "github", api_base, "stub-token")
+            gh_exit2, gh_out2 = run_ci_pr_comment(report, "github", api_base, "stub-token")
+            gl_exit, gl_out = run_ci_pr_comment(report, "gitlab", api_base, "stub-token")
+            gl_exit2, gl_out2 = run_ci_pr_comment(report, "gitlab", api_base, "stub-token")
+            calls = list(stub.calls)
+        finally:
+            stub.stop()
+
+        gh_paths = [path for method, path, _ in calls if method == "GET"]
+        create_calls = [call for call in calls if call[0] in ("POST", "PATCH", "PUT")]
+        markers_ok = all(("dg-contract-gate" in str((body or {}).get("body", "")))
+                         for _, _, body in create_calls if body)
+        check("37d. PR 回写：GitHub 与 GitLab 各一条 upsert（先创建、再次更新，不刷屏）",
+              gh_exit == 0 and gh_exit2 == 0 and gl_exit == 0 and gl_exit2 == 0
+              and "已创建评论" in gh_out and "已更新既有评论" in gh_out2
+              and "已创建评论" in gl_out and "已更新既有评论" in gl_out2
+              and markers_ok and len(create_calls) == 4,
+              f"GitHub：{gh_out} / {gh_out2}；GitLab：{gl_out} / {gl_out2}")
+
+        gh_path = next((path for method, path, _ in calls
+                        if "issues" in path and method == "POST"), "")
+        gl_path = next((path for method, path, _ in calls
+                        if "notes" in path and method == "POST"), "")
+        check("37e. 回写打到各自平台的**正确端点**（GitHub issues/comments、GitLab MR notes）",
+              gh_path.startswith("/repos/acme/dg/issues/42/comments")
+              and gl_path.startswith("/projects/123/merge_requests/7/notes"),
+              f"{gh_path} | {gl_path}")
+
+        no_token_exit, no_token_out = run_ci_pr_comment(report, "github", api_base, None)
+        check("37f. 没有凭证时**跳过而不是失败**（否则这一步会被团队直接删掉）",
+              no_token_exit == 0 and "跳过" in no_token_out and "dg-contract-gate" not in no_token_out,
+              no_token_out[:70])
+
+        action_file = REPO_ROOT / ".github" / "actions" / "contract-gate" / "action.yml"
+        gitlab_ci = REPO_ROOT / "ci" / "contract-gate.gitlab-ci.yml"
+        workflow = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+        action_doc = yaml.safe_load(action_file.read_text(encoding="utf-8")) if action_file.exists() else {}
+        gitlab_doc = yaml.safe_load(gitlab_ci.read_text(encoding="utf-8")) if gitlab_ci.exists() else {}
+        workflow_doc = yaml.safe_load(workflow.read_text(encoding="utf-8")) if workflow.exists() else {}
+        check("37g. 插件包与 CI 流水线都在仓库里（不再只是「文档里说可以接」）",
+              action_doc.get("runs", {}).get("using") == "composite"
+              and "contract" in action_doc.get("inputs", {})
+              and "contract-gate:mr" in gitlab_doc
+              and "jobs" in workflow_doc,
+              f"GitHub Action 输入 {len(action_doc.get('inputs', {}))} 个；"
+              f"GitLab 模板 job {sorted(k for k in gitlab_doc if not k.startswith('.'))}；"
+              f"仓库 CI job {sorted(workflow_doc.get('jobs', {}))}")
 
     # ------------------------------------------------------------ 23) 界面
     status, html = call("GET", "/", token=None)
@@ -929,6 +1790,18 @@ def run_checks() -> int:
     status, deep = call("GET", "/governance", token=None)
     check("23b. SPA 深链回退到 index.html",
           status == 200 and isinstance(deep, str) and 'id="root"' in deep, f"HTTP {status}")
+
+    spaview = []
+    for route in ("/observability", "/ai"):
+        route_status, route_body = call("GET", route, token=None)
+        spaview.append(route_status == 200 and isinstance(route_body, str) and 'id="root"' in route_body)
+    check("23c. 本批次新增入口（可观测 / AI 与 Agent）由 SPA 托管（深链可直达）",
+          all(spaview), "路由 /observability、/ai 均返回 SPA 外壳")
+
+    status, html_assets = call("GET", "/", token=None)
+    bundled = re.search(r'/assets/(index-[A-Za-z0-9_-]+\.js)', html_assets) if isinstance(html_assets, str) else None
+    check("23d. 界面产物与后端同源发布（构建产物确实被服务出去，而不是只存在于 dist 目录）",
+          bundled is not None, f"入口 bundle：{bundled.group(1) if bundled else '未找到'}")
 
     failed = [item for item in results if not item[1]]
     print("\n" + "=" * 66)

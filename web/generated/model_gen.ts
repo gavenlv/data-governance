@@ -1,7 +1,7 @@
 // AUTO-GENERATED FILE — DO NOT EDIT BY HAND.
 // Source of truth: model/**.yaml
 // Regenerate: python -m dg.cli codegen --target typescript
-// Generated at 2026-10-04 14:09:42Z (timestamp line is ignored by --check)
+// Generated at 2026-10-04 14:57:16Z (timestamp line is ignored by --check)
 
 export const ENTITY_TYPES = [
   'Column',
@@ -11,6 +11,7 @@ export const ENTITY_TYPES = [
   'Dataset',
   'Domain',
   'GlossaryTerm',
+  'Metric',
   'Pipeline',
   'Platform',
   'QualityRule',
@@ -28,9 +29,11 @@ export const ASPECT_TYPES = [
   'datasetSchema',
   'descriptions',
   'lifecycle',
+  'metricSpec',
   'ownership',
   'ruleSpec',
   'tags',
+  'termSpec',
   'trustLevel',
 ] as const;
 export type AspectType = (typeof ASPECT_TYPES)[number];
@@ -57,7 +60,8 @@ export const ENTITY_ASPECTS: Record<EntityType, readonly string[]> = {
   DataContract: ["descriptions", "tags", "ownership", "lifecycle", "contractSpec"],
   Dataset: ["descriptions", "tags", "ownership", "datasetSchema", "classification", "lifecycle", "trustLevel"],
   Domain: ["descriptions", "ownership"],
-  GlossaryTerm: ["descriptions", "tags", "ownership"],
+  GlossaryTerm: ["descriptions", "tags", "ownership", "termSpec"],
+  Metric: ["descriptions", "tags", "ownership", "lifecycle", "metricSpec"],
   Pipeline: ["descriptions", "tags", "ownership", "lifecycle"],
   Platform: ["descriptions", "tags", "ownership"],
   QualityRule: ["descriptions", "tags", "ownership", "lifecycle", "ruleSpec"],
@@ -136,6 +140,15 @@ export interface Lifecycle {
   replacedBy?: string;
 }
 
+export interface MetricSpec {
+  metricName: string;
+  metricType?: 'SIMPLE' | 'RATIO' | 'DERIVED' | 'CUMULATIVE';
+  expression?: string;
+  sourceFormat?: 'dg' | 'dbt' | 'cube';
+  physicalColumns?: string[];
+  dimensions?: unknown[];
+}
+
 export interface Ownership {
   owners?: unknown[];
 }
@@ -164,6 +177,15 @@ export interface RuleSpec {
 
 export interface Tags {
   tags?: string[];
+}
+
+export interface TermSpec {
+  definition?: string;
+  synonyms?: string[];
+  status?: 'DRAFT' | 'APPROVED' | 'DEPRECATED';
+  steward?: string;
+  relatedTerms?: string[];
+  sourceRef?: string;
 }
 
 export interface TrustLevel {

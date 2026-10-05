@@ -52,6 +52,33 @@ public final class RawModels {
     }
 
     /**
+     * 连接器产出的一条血缘边（可选能力）。
+     *
+     * <p>为什么血缘要由连接器产出、而不是统一用 SQL 解析：<b>有些源本来就带着精确的血缘</b> ——
+     * dbt 的 {@code manifest.json} 里 {@code depends_on.nodes} 是编译期确定的依赖，
+     * 比事后解析 SQL 更准（不会因为方言/动态 SQL 而失败）。
+     * 让连接器把这类"已知事实"直接交出来，比让所有源都去猜要诚实得多。
+     *
+     * <p>约定与全局一致：{@code fromUrn} 是**上游**，{@code toUrn} 是**下游**。
+     *
+     * @param source    边来源（写入 {@code edge.source}，如 dbt_manifest / api）
+     * @param confidence 置信度（编译期确定的依赖给 1.0）
+     * @param parseLevel exact（编译期确定）| derived（推导）| table_level_only（只到表级）
+     */
+    public record RawEdge(
+            String fromUrn,
+            String toUrn,
+            String edgeType,
+            String source,
+            double confidence,
+            String transform,
+            String parseLevel,
+            String viaJob,
+            /** 该边为什么存在（例如 "dbt ref('orders')"）：写进入边的 properties，便于人工核对。 */
+            String reason) {
+    }
+
+    /**
      * 一个 BI 资产（仪表板 / 看板）。
      *
      * <p>为什么 BI 资产要进采集框架而不是另起一套：它同样需要 URN、Owner、标签、分级、

@@ -97,6 +97,9 @@ public class CollectionService {
         int[] dashboardsSunk = new int[3]; // 已处理、新建、删除
         boolean[] dashboardGuard = new boolean[1];
         String[] dashboardGuardReason = new String[1];
+        /** 连接器自带血缘写入的边数；skipNotes 记录"为什么有些边没有写"。 */
+        int edgesWritten = 0;
+        List<String> skipNotes = new ArrayList<>();
 
         try {
             metadata.ensureEntity(platformUrn, "Platform", source.name(), runId);
@@ -189,6 +192,21 @@ public class CollectionService {
                             "collect:" + runId).size();
                 }
                 saveSnapshot(source.name(), namespace, scope, runId, current, status);
+
+                // 连接器自带的血缘（dbt manifest 这类"编译期已知"的依赖）。
+                // 放在护栏通过之后写：被拦截的这一轮不应该往图里加边 ——
+                // 否则"目录没更新、血缘却变了"，两边对不上。
+                for (RawModels.RawEdge edge : source.extractEdges().toList()) {
+                    try {
+                        metadata.upsertEdge(edge.fromUrn(), edge.toUrn(), edge.edgeType(), edge.source(),
+                                edge.confidence(), edge.transform(), null, null, "VALUE",
+                                edge.parseLevel(), edge.viaJob(), runId);
+                        edgesWritten++;
+                    } catch (RuntimeException e) {
+                        errors.add("edge %s→%s: %s".formatted(edge.fromUrn(), edge.toUrn(), e.getMessage()));
+                    }
+                }
+                skipNotes.addAll(source.edgeSkipNotes());
             }
         } catch (RuntimeException e) {
             status = CollectionRun.FAILED;

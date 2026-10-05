@@ -35,11 +35,14 @@ import {
   type ContractVersionRow,
   type ContractViolationRow,
   type ContractConsumers,
+  type EngineAuditRecord,
   type PolicyDeploymentRow,
   type PolicyRow,
+  type UnapprovedAccessRow,
 } from '../api/client'
 import { CapabilityBadge } from '../components/CapabilityBadge'
 import { useCapabilities } from '../hooks/useCapabilities'
+import { useTabParam } from '../hooks/useTabParam'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -51,6 +54,7 @@ const { Title, Text, Paragraph } = Typography
  */
 export default function GovernancePage() {
   const capabilities = useCapabilities()
+  const [tab, setTab] = useTabParam('access')
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -68,15 +72,269 @@ export default function GovernancePage() {
       </div>
 
       <Tabs
+        activeKey={tab}
+        onChange={setTab}
         items={[
           { key: 'access', label: '访问申请与授权', children: <AccessTab /> },
           { key: 'review', label: '复核与最小权限', children: <ReviewTab /> },
+          { key: 'engine', label: '引擎审计（真实访问）', children: <EngineAuditTab /> },
           { key: 'policy', label: '策略与覆盖率', children: <PolicyTab /> },
           { key: 'audit', label: '审计取证', children: <AuditTab /> },
           { key: 'contracts', label: '数据契约', children: <ContractsTab /> },
           { key: 'violations', label: '违约事件', children: <ViolationsTab /> },
         ]}
       />
+    </Space>
+  )
+}
+
+/**
+ * 引擎审计（真实访问）。
+ *
+ * <p>这一页回答两个此前答不了的问题：
+ * 「批准了但从来没被用过」与「被访问了但从来没被批准过」。
+ * 采集侧是**推送**（引擎事件 / 日志采集器），因此页面同时给出接入情况与可复制的推送格式。
+ */
+function EngineAuditTab() {
+  const capabilities = useCapabilities()
+  const queryClient = useQueryClient()
+  const [form] = Form.useForm()
+  const [recordsText, setRecordsText] = useState('')
+  const [ingestResult, setIngestResult] = useState<Record<string, unknown> | null>(null)
+
+  const coverage = useQuery({ queryKey: ['engine-audit-coverage'], queryFn: () => api.engineAuditCoverage() })
+  const records = useQuery({ queryKey: ['engine-audit-records'], queryFn: () => api.engineAuditRecords({ limit: 50 }) })
+  const unapproved = useQuery({ queryKey: ['unapproved-access'], queryFn: () => api.unapprovedAccess(3650, 50) })
+
+  const ingest = useMutation({
+    mutationFn: (values: Record<string, unknown>) => {
+      let parsed: Record<string, unknown>[] = []
+      try {
+        const raw = JSON.parse(String(values.records ?? '[]')) as unknown
+        parsed = Array.isArray(raw) ? (raw as Record<string, unknown>[]) : [raw as Record<string, unknown>]
+      } catch {
+        throw new Error('记录必须是 JSON 数组（每条形如 {"user":"alice","timestamp":"...","table":"db.schema.tbl"}）')
+      }
+      return api.engineAuditIngest({
+        engine: String(values.engine),
+        namespace: values.namespace ? String(values.namespace) : undefined,
+        records: parsed,
+      })
+    },
+    onSuccess: (result) => {
+      setIngestResult(result as unknown as Record<string, unknown>)
+      void queryClient.invalidateQueries({ queryKey: ['engine-audit-coverage'] })
+      void queryClient.invalidateQueries({ queryKey: ['engine-audit-records'] })
+      void queryClient.invalidateQueries({ queryKey: ['unapproved-access'] })
+      message.success(`摄入完成：接受 ${result.accepted}，去重 ${result.duplicated}，未解析 ${result.unresolved}，被拒 ${result.rejected}`)
+    },
+    onError: (error) => message.error(String(error)),
+  })
+
+  const totalRecords = coverage.data?.totalRecords ?? 0
+  const sample = JSON.stringify([
+    { user: 'alice', queryId: 'q-1', timestamp: '2026-10-04T10:00:00Z',
+      table: 'dg.public.event_log', columns: ['event_id'], operation: 'SELECT' },
+  ], null, 2)
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Alert
+        type={totalRecords > 0 ? 'success' : 'warning'}
+        showIcon
+        message={
+          totalRecords > 0
+            ? `已接入引擎审计：${totalRecords} 条记录（${coverage.data?.byEngine?.map((row) => row.engine).join(' / ') || '—'}）`
+            : '尚未接入引擎审计：目前无法判断「批准了但没被用过」，复核里会明确标注证据不足'
+        }
+        description={
+          <>
+            平台接受**推送**（Trino 查询事件 / Ranger 访问审计 / 数仓查询日志）。
+            记录按内容哈希**幂等去重**；解析不到平台资产的记录**仍然保留**并说明原因
+            （丢弃等于宣称这次访问没有发生）。
+            <br />
+            采集侧参考实现：<Text code>python tools/engine_audit_load.py --engine trino --file queries.jsonl</Text>
+          </>
+        }
+      />
+
+      <Row gutter={16}>
+        <Col span={10}>
+          <Card
+            size="small"
+            title="接入情况"
+            extra={<CapabilityBadge status={capabilities.get('policy.engine-audit-ingest')?.status ?? 'NOT_IMPLEMENTED'} />}
+          >
+            {coverage.data?.byEngine?.length ? (
+              <Table
+                size="small"
+                rowKey="engine"
+                pagination={false}
+                dataSource={coverage.data.byEngine}
+                columns={[
+                  { title: '引擎', dataIndex: 'engine', width: 100 },
+                  { title: '记录', dataIndex: 'records', width: 80 },
+                  {
+                    title: '解析 / 未解析',
+                    render: (_, row) => (
+                      <Space size={4}>
+                        <Tag color="success">{row.resolved}</Tag>
+                        <Tag color={row.unresolved > 0 ? 'warning' : 'default'}>{row.unresolved}</Tag>
+                      </Space>
+                    ),
+                  },
+                  {
+                    title: '观测窗口',
+                    render: (_, row) => (
+                      <Text style={{ fontSize: 12 }}>
+                        {String(row.window_from ?? '').slice(0, 19).replace('T', ' ')} 起
+                      </Text>
+                    ),
+                  },
+                ]}
+              />
+            ) : (
+              <Empty description="还没有任何引擎审计记录" />
+            )}
+            {coverage.data && (
+              <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+                {coverage.data.resolutionNote}
+              </Paragraph>
+            )}
+          </Card>
+        </Col>
+        <Col span={14}>
+          <Card size="small" title="推送一批记录（试推 / 接入前的连通性验证）">
+            <Form
+              form={form}
+              layout="inline"
+              initialValues={{ engine: 'trino', namespace: 'prod', records: sample }}
+              onFinish={(values) => ingest.mutate(values)}
+            >
+              <Form.Item name="engine" label="引擎">
+                <Select
+                  style={{ width: 130 }}
+                  options={['trino', 'ranger', 'warehouse', 'superset', 'other'].map((value) => ({ value, label: value }))}
+                />
+              </Form.Item>
+              <Form.Item name="namespace" label="命名空间">
+                <Input style={{ width: 130 }} />
+              </Form.Item>
+              <Form.Item name="records" label="记录（JSON 数组）" style={{ width: '100%', marginTop: 8 }}>
+                <Input.TextArea rows={7} value={recordsText} onChange={(event) => setRecordsText(event.target.value)} />
+              </Form.Item>
+              <Button type="primary" htmlType="submit" loading={ingest.isPending}>
+                推送
+              </Button>
+            </Form>
+            {ingestResult && (
+              <Alert
+                style={{ marginTop: 8 }}
+                type={Number(ingestResult.rejected) > 0 ? 'warning' : 'info'}
+                message={`接受 ${ingestResult.accepted} / 去重 ${ingestResult.duplicated} / 未解析 ${ingestResult.unresolved} / 被拒 ${ingestResult.rejected}`}
+                description={
+                  Array.isArray(ingestResult.rejectedSamples) && (ingestResult.rejectedSamples as string[]).length > 0
+                    ? `被拒原因：${(ingestResult.rejectedSamples as string[]).join('；')}`
+                    : String(ingestResult.note ?? '')
+                }
+              />
+            )}
+          </Card>
+        </Col>
+      </Row>
+
+      <Card
+        size="small"
+        title="被访问但从未被批准（绕过治理的访问信号）"
+        extra={
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            接入引擎审计后新增的能力：直连访问会留下记录
+          </Text>
+        }
+      >
+        <Table<UnapprovedAccessRow>
+          size="small"
+          rowKey={(row) => `${row.actor}|${row.resource_urn}|${row.engine}`}
+          loading={unapproved.isLoading}
+          dataSource={unapproved.data?.unapproved ?? []}
+          pagination={{ pageSize: 8 }}
+          locale={{ emptyText: <Empty description="没有发现「无授权但有访问」的记录" /> }}
+          columns={[
+            { title: '主体', dataIndex: 'actor', width: 200 },
+            {
+              title: '资源',
+              dataIndex: 'resource_urn',
+              render: (value: string, row) => (
+                <Space direction="vertical" size={0}>
+                  <Text style={{ fontSize: 12 }}>{value}</Text>
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    引擎侧原名 {row.resource_raw}（{row.engine}）
+                  </Text>
+                </Space>
+              ),
+            },
+            { title: '次数', dataIndex: 'queries', width: 80 },
+            {
+              title: '最近访问',
+              dataIndex: 'last_access_at',
+              width: 170,
+              render: (value: string) => <Text style={{ fontSize: 12 }}>{String(value).slice(0, 19).replace('T', ' ')}</Text>,
+            },
+          ]}
+        />
+        <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+          {String(unapproved.data?.note ?? '')}
+        </Paragraph>
+      </Card>
+
+      <Card size="small" title="原始记录（取证用）">
+        <Table<EngineAuditRecord>
+          size="small"
+          rowKey="id"
+          loading={records.isLoading}
+          dataSource={records.data?.records ?? []}
+          pagination={{ pageSize: 10 }}
+          columns={[
+            {
+              title: '时间',
+              dataIndex: 'event_time',
+              width: 170,
+              render: (value: string) => <Text style={{ fontSize: 12 }}>{String(value).slice(0, 19).replace('T', ' ')}</Text>,
+            },
+            { title: '主体', dataIndex: 'actor', width: 180 },
+            { title: '操作', dataIndex: 'operation', width: 90 },
+            {
+              title: '资源',
+              render: (_, row) => (
+                <Space direction="vertical" size={0}>
+                  <Text style={{ fontSize: 12 }}>{row.resource_raw}</Text>
+                  {row.resolved ? (
+                    <Text type="secondary" style={{ fontSize: 11 }}>
+                      → {row.resource_urn}
+                    </Text>
+                  ) : (
+                    <Text type="warning" style={{ fontSize: 11 }}>
+                      未解析：{row.resolve_note}
+                    </Text>
+                  )}
+                </Space>
+              ),
+            },
+            {
+              title: '列',
+              dataIndex: 'columns',
+              width: 160,
+              render: (value: string[]) => (
+                <Space size={4} wrap>
+                  {(value ?? []).slice(0, 4).map((column) => (
+                    <Tag key={column}>{column}</Tag>
+                  ))}
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Card>
     </Space>
   )
 }

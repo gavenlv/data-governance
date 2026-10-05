@@ -46,6 +46,14 @@ public class SecurityConfig {
                 .cors(cors -> cors.configure(http))
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // Edge Agent 的三个上报端点走 **Agent 自己的凭据**（dgagent_...，库里只存哈希、可吊销），
+                        // 而不是平台令牌，因此在这里放行、由 EdgeAgentService 在服务层校验。
+                        // 只放行这三个**字面路径**（不用通配符）：管理面 /api/v1/edge/agents 仍需平台令牌，
+                        // 避免"放行一个前缀"顺手把管理接口也放开（docs/09 §9.7）。
+                        .requestMatchers(
+                                "/api/v1/edge/agent/heartbeat",
+                                "/api/v1/edge/agent/report",
+                                "/api/v1/edge/agent/whoami").permitAll()
                         // 界面静态资源与 SPA 路由公开；数据一律经 /api/** 且需认证
                         // （界面不做专用后门：界面上看不到的，接口同样拿不到，docs/09 §9.3）
                         .requestMatchers("/api/**").authenticated()

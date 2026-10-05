@@ -11,8 +11,8 @@
 
     <artifactId>dg-ai</artifactId>
     <name>dg-ai</name>
-    <!-- 状态：骨架，未实现（docs/13，Phase 4 交付） -->
-    <description>AI 原生能力：Suggestion 建议引擎 / 语义检索 / MCP 出口。当前为骨架，未实现。</description>
+    <!-- 状态：建议引擎 / 混合检索 / MCP 子集 / 语义层接入已实现；向量检索与大模型推理未配置（docs/13） -->
+    <description>AI 原生能力：Suggestion 建议引擎 / 混合检索 / MCP 出口 / 语义层指标接入。</description>
 
     <dependencies>
         <dependency>
@@ -22,6 +22,19 @@
         <dependency>
             <groupId>com.datagovernance</groupId>
             <artifactId>dg-model</artifactId>
+        </dependency>
+        <!-- MCP 工具需要复用血缘影响分析与质量结果，避免在 AI 层重写一遍查询逻辑 -->
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-lineage</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-quality</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-policy</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

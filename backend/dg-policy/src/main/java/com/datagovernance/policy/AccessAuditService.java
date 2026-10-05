@@ -16,22 +16,34 @@ import org.springframework.stereotype.Service;
  * <p>审计要回答的问题不是"系统记录了什么"，而是这三类**取证问题**：
  * <ol>
  *   <li><b>谁在什么时候获得了什么权限、依据什么</b>（申请 → 审批 → 授权 → 策略版本）；</li>
- *   <li><b>这条权限现在还需要吗</b>（复核 + 使用证据）；</li>
- *   <li><b>权限判断本身有没有被绕过</b>（这一条本平台<b>做不到</b>，必须说清楚）。</li>
+ *   <li><b>这条权限现在还需要吗</b>（复核 + **引擎侧使用证据**）；</li>
+ *   <li><b>权限判断有没有被绕过</b>（引擎审计接入后，绕过会留下"被访问但无授权"的记录）。</li>
  * </ol>
  *
- * <p>诚实边界：平台只能审计**平台自身的决策**（申请/审批/吊销/策略下发）。
- * 引擎侧的真实查询与直连访问需要引擎审计日志，本平台尚未接入 ——
- * 因此导出报告里会显式标注"审计覆盖范围"，
- * 避免让合规方以为"平台没记录 = 没有人访问过"。
+ * <p>覆盖范围**按当前实际数据动态生成**（见 {@link #coverageNote}）：
+ * 引擎审计接入了就写"已覆盖 + 观测窗口 + 解析率"，没接入就仍然写"未覆盖"。
+ * 一份写死的覆盖说明很快会变成谎话 —— 这正是审计场景里最不能接受的。
+ *
+ * <p>仍然存在的边界：未开启查询日志的引擎、以及连日志都没留下的访问，
+ * 任何平台都无法观测；报告不会假装覆盖了它们。
  */
 @Service
 public class AccessAuditService {
 
-    private final JdbcTemplate jdbc;
+    /**
+     * 判定"未被使用"的最小授权年龄（天）。
+     *
+     * <p>没有这个门槛会出现很荒谬的结论：昨天刚批的授权今天没被用上，就被标成"可回收"。
+     * 审计结论宁可保守 —— 误回收权限造成的生产事故，比多留一条权限严重得多。
+     */
+    private static final int MIN_JUDGE_DAYS = 30;
 
-    public AccessAuditService(JdbcTemplate jdbc) {
+    private final JdbcTemplate jdbc;
+    private final EngineAuditService engineAudit;
+
+    public AccessAuditService(JdbcTemplate jdbc, EngineAuditService engineAudit) {
         this.jdbc = jdbc;
+        this.engineAudit = engineAudit;
     }
 
     /** 访问事件（平台侧决策）。 */
@@ -115,23 +127,58 @@ public class AccessAuditService {
                 SELECT COUNT(*) FROM audit_log WHERE created_at > now() - (? || ' days')::interval
                 """, Integer.class, String.valueOf(days)));
 
-        payload.put("coverageNote", Map.of(
-                "covered", List.of(
-                        "平台自身的访问治理决策：申请、审批、授权、吊销、到期回收、复核",
-                        "策略的建模、编译、下发与回滚（含产物哈希）",
-                        "元数据变更审计（audit_log 的哈希链）"),
-                "notCovered", List.of(
-                        "**引擎侧的真实查询**（谁查了哪些行/列）：需要查询日志或引擎审计日志，未接入",
-                        "**直连数仓 JDBC 的访问**：绕过 Trino/策略执行点，平台看不到",
-                        "**BI 工具内的查询**：仅在 BI 提供审计接口时才能获取，未接入"),
-                "implication", "报告里「没有记录」不等于「没有发生」——合规结论需结合引擎侧审计共同判断"));
+        payload.put("coverageNote", coverageNote(days,
+                jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE created_at > now() - (? || ' days')::interval",
+                        Integer.class, String.valueOf(days))));
         return payload;
+    }
+
+    /**
+     * 审计覆盖范围说明。
+     *
+     * <p>Batch 5 时这里写着"引擎侧真实查询未接入"；接入引擎审计之后，覆盖范围**变成动态的**：
+     * 接了就是"已覆盖（附观测窗口与解析率）"，没接就仍然是"未覆盖"。
+     * 一份固定的覆盖说明很快会变成谎话 —— 因此这里必须按当前实际数据生成。
+     */
+    private Map<String, Object> coverageNote(int days, Integer auditLogEntries) {
+        Map<String, Object> window = engineAudit.observationWindow();
+        boolean engineConfigured = Boolean.TRUE.equals(engineAudit.coverage().get("configured"));
+        List<String> covered = new ArrayList<>(List.of(
+                "平台自身的访问治理决策：申请、审批、授权、吊销、到期回收、复核",
+                "策略的建模、编译、下发与回滚（含产物哈希）",
+                "元数据变更审计（audit_log 的哈希链，本窗口 " + (auditLogEntries == null ? 0 : auditLogEntries) + " 条）"));
+        List<String> notCovered = new ArrayList<>();
+
+        if (engineConfigured) {
+            covered.add("**引擎侧的真实查询**（谁在什么时候查了哪张表/哪些列）：已通过引擎审计摄入，"
+                    + "观测窗口 " + window.get("window_from") + " ~ " + window.get("window_to")
+                    + "（约 " + window.get("windowDays") + " 天，共 " + window.get("records") + " 条记录）");
+            notCovered.add("**未接入审计的引擎**：只覆盖已推送日志的引擎；"
+                    + "其它引擎（或未开启查询日志的实例）的访问仍不可见");
+        } else {
+            notCovered.add("**引擎侧的真实查询**（谁查了哪些行/列）：尚未接入任何引擎审计日志 —— "
+                    + "「批准了但没使用」目前只能靠人工判断（复核会明确标注证据不足）");
+        }
+        notCovered.add("**BI 工具内的查询**：仅在 BI 提供审计接口并接入后才能获取");
+        notCovered.add("**绕过日志记录的访问**：连引擎日志都没留下的访问（例如未开启审计、"
+                + "或直接读取存储文件）任何平台都无法观测");
+
+        Map<String, Object> note = new LinkedHashMap<>();
+        note.put("covered", covered);
+        note.put("notCovered", notCovered);
+        note.put("engineAuditWindow", window);
+        note.put("implication", "报告里「没有记录」不等于「没有发生」——"
+                + "合规结论需结合引擎侧审计的**观测窗口**与**覆盖引擎清单**共同判断");
+        return note;
     }
 
     /**
      * 最小权限复盘：把授权按"是否在用 / 是否过期 / 是否复核过"分类，给出回收候选。
      *
-     * <p>关键点：<b>没有使用数据时归入"证据不足"，而不是"未使用"</b>。
+     * <p>关键点（Batch 5 时的纪律，接入引擎审计后依然成立且更严格）：
+     * <b>没有使用数据时归入"证据不足"，而不是"未使用"</b>。
+     * 现在有了引擎审计，还要再判一层：**观测窗口是否覆盖了授权时长** ——
+     * 只观测了 7 天日志却拿它去否定一条 200 天前的授权，是典型的错误结论。
      */
     public Map<String, Object> leastPrivilegeReview(int limit) {
         List<Map<String, Object>> grants = jdbc.queryForList("""
@@ -142,33 +189,76 @@ public class AccessAuditService {
                  ORDER BY g.granted_at LIMIT ?
                 """, Math.min(Math.max(limit, 1), 500));
 
+        Map<String, Object> window = engineAudit.observationWindow();
+        boolean usageDataAvailable = engineAudit.hasAnyRecord();
+
         List<Map<String, Object>> revokeCandidates = new ArrayList<>();
         List<Map<String, Object>> insufficientEvidence = new ArrayList<>();
         List<Map<String, Object>> wideGrants = new ArrayList<>();
+        List<Map<String, Object>> inUse = new ArrayList<>();
         for (Map<String, Object> grant : grants) {
             long ageDays = ((Number) grant.get("age_days")).longValue();
             Map<String, Object> item = new LinkedHashMap<>(grant);
-            if ("DATASET".equals(grant.get("granularity")) && ageDays >= 30) {
+            Map<String, Object> evidence = usageDataAvailable
+                    ? engineAudit.usageEvidence(String.valueOf(grant.get("subject")),
+                            String.valueOf(grant.get("resource_urn")), 3650)
+                    : Map.of();
+            item.put("usageEvidence", evidence);
+            boolean used = evidence.get("last_used_at") != null;
+            java.time.Instant grantedAt = grant.get("granted_at") == null ? null
+                    : ((java.sql.Timestamp) grant.get("granted_at")).toInstant();
+            // 能否判定"未使用"的唯一标准：观测窗口覆盖了授权的整个生命周期
+            boolean windowCoversGrant = usageDataAvailable && engineAudit.coversGrantLife(grantedAt);
+
+            if ("DATASET".equals(grant.get("granularity")) && ageDays >= 30 && !used) {
                 item.put("reason", "整表授权且已存在 " + ageDays + " 天：确认是否可收窄为列级");
                 wideGrants.add(item);
             }
-            if (grant.get("last_reviewed_at") == null && ageDays >= 180) {
-                item.put("reason", "授权已 " + ageDays + " 天从未复核");
+            if (used) {
+                item.put("reason", "观测窗口内被访问过（最近 " + evidence.get("last_used_at") + "）："
+                        + "建议 KEEP，但可核对列级使用范围");
+                inUse.add(item);
+                continue;
+            }
+            if (!usageDataAvailable) {
+                item.put("reason", "尚未接入引擎审计：**无法判断授权是否在用**");
+                insufficientEvidence.add(item);
+                continue;
+            }
+            if (ageDays < MIN_JUDGE_DAYS) {
+                item.put("reason", "授权仅存在 " + ageDays + " 天：**过新，尚不足以判断使用率**"
+                        + "（新授权本来就可能还没被用上）");
+                insufficientEvidence.add(item);
+            } else if (windowCoversGrant) {
+                item.put("reason", "授权已存在 " + ageDays + " 天，且观测窗口覆盖了它的整个生命周期，"
+                        + "窗口内**零访问**：可回收（证据来自引擎审计）");
                 revokeCandidates.add(item);
-            } else if (grant.get("last_reviewed_at") == null) {
+            } else if (grant.get("last_reviewed_at") == null && ageDays >= 180) {
+                item.put("reason", "授权已 " + ageDays + " 天从未复核"
+                        + "（观测窗口起始于 " + window.get("window_from") + "，早于授权创建时间之前才有权判定未使用）");
+                revokeCandidates.add(item);
+            } else {
+                item.put("reason", "观测窗口起始于 " + window.get("window_from")
+                        + "，晚于该授权的创建时间：**证据不足**，不能判定未使用");
                 insufficientEvidence.add(item);
             }
         }
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("activeGrants", grants.size());
+        payload.put("usageDataAvailable", usageDataAvailable);
+        payload.put("observationWindow", window);
+        payload.put("recentlyUsed", inUse);
         payload.put("neverReviewed", revokeCandidates);
         payload.put("neverReviewedRecent", insufficientEvidence);
         payload.put("granularityCandidates", wideGrants);
-        payload.put("usageDataAvailable", false);
-        payload.put("note", "本平台尚未接入查询日志，**无法判断授权是否在用**；"
-                + "因此「回收候选」只基于授权时长与复核状态，不基于使用情况。"
-                + "把「未使用」当成「没有记录」是权限误回收的常见原因");
+        payload.put("note", usageDataAvailable
+                ? "使用证据来自引擎审计。判定「未使用」的唯一标准是**观测窗口覆盖了授权的整个生命周期**"
+                        + "（否则窗口内的零访问不能证明授权从未被使用），且授权需 ≥ " + MIN_JUDGE_DAYS + " 天 —— "
+                        + "把「没观测到」当成「没使用」是权限误回收的常见原因"
+                : "尚未接入引擎审计，**无法判断授权是否在用**；"
+                        + "因此「回收候选」只基于授权时长与复核状态，不基于使用情况。"
+                        + "接入方式见 GET /api/v1/access/engine-audit/coverage");
         return payload;
     }
 }

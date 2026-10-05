@@ -1,7 +1,7 @@
 # AUTO-GENERATED FILE — DO NOT EDIT BY HAND.
 # Source of truth: model/**.yaml
 # Regenerate: python -m dg.cli codegen --target python
-# Generated at 2026-10-04 14:09:42Z (timestamp line is ignored by --check)
+# Generated at 2026-10-04 14:57:16Z (timestamp line is ignored by --check)
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -10,7 +10,7 @@ from typing import Any, Literal
 # ---------------------------------------------------------------------------
 # 实体类型
 # ---------------------------------------------------------------------------
-ENTITY_TYPES: tuple[str, ...] = ('Platform', 'Container', 'Dataset', 'Column', 'Pipeline', 'Dashboard', 'GlossaryTerm', 'Tag', 'Team', 'User', 'Domain', 'DataContract', 'QualityRule')
+ENTITY_TYPES: tuple[str, ...] = ('Platform', 'Container', 'Dataset', 'Column', 'Pipeline', 'Dashboard', 'GlossaryTerm', 'Tag', 'Team', 'User', 'Domain', 'DataContract', 'QualityRule', 'Metric')
 
 ENTITY_ASPECTS: dict[str, tuple[str, ...]] = {
     'Column': ('descriptions', 'tags', 'classification', 'columnProfile'),
@@ -19,7 +19,8 @@ ENTITY_ASPECTS: dict[str, tuple[str, ...]] = {
     'DataContract': ('descriptions', 'tags', 'ownership', 'lifecycle', 'contractSpec'),
     'Dataset': ('descriptions', 'tags', 'ownership', 'datasetSchema', 'classification', 'lifecycle', 'trustLevel'),
     'Domain': ('descriptions', 'ownership'),
-    'GlossaryTerm': ('descriptions', 'tags', 'ownership'),
+    'GlossaryTerm': ('descriptions', 'tags', 'ownership', 'termSpec'),
+    'Metric': ('descriptions', 'tags', 'ownership', 'lifecycle', 'metricSpec'),
     'Pipeline': ('descriptions', 'tags', 'ownership', 'lifecycle'),
     'Platform': ('descriptions', 'tags', 'ownership'),
     'QualityRule': ('descriptions', 'tags', 'ownership', 'lifecycle', 'ruleSpec'),
@@ -36,6 +37,7 @@ ENTITY_PARENTS: dict[str, tuple[str, ...]] = {
     'Dataset': ('Container',),
     'Domain': (),
     'GlossaryTerm': (),
+    'Metric': (),
     'Pipeline': ('Platform',),
     'Platform': (),
     'QualityRule': (),
@@ -47,7 +49,7 @@ ENTITY_PARENTS: dict[str, tuple[str, ...]] = {
 # ---------------------------------------------------------------------------
 # Aspect 类型与字段规格：(字段名, 类型, 是否必填)
 # ---------------------------------------------------------------------------
-ASPECT_TYPES: tuple[str, ...] = ('descriptions', 'tags', 'ownership', 'datasetSchema', 'classification', 'lifecycle', 'trustLevel', 'columnProfile', 'contractSpec', 'ruleSpec', 'dashboardSpec')
+ASPECT_TYPES: tuple[str, ...] = ('descriptions', 'tags', 'ownership', 'datasetSchema', 'classification', 'lifecycle', 'trustLevel', 'columnProfile', 'contractSpec', 'ruleSpec', 'dashboardSpec', 'metricSpec', 'termSpec')
 
 ASPECT_PROPERTIES: dict[str, tuple[tuple[str, str, bool], ...]] = {
     'classification': (('level', 'enum', False), ('categories', 'array', False), ('piiTypes', 'array', False), ('appliedBy', 'object', False), ('propagation', 'object', False), ('reviewedBy', 'string', False)),
@@ -57,9 +59,11 @@ ASPECT_PROPERTIES: dict[str, tuple[tuple[str, str, bool], ...]] = {
     'datasetSchema': (('fields', 'array', False), ('primaryKey', 'array', False), ('partitionKeys', 'array', False), ('schemaHash', 'string', False), ('rawTypeSystem', 'string', False)),
     'descriptions': (('text', 'string', True), ('language', 'string', False), ('source', 'enum', False)),
     'lifecycle': (('stage', 'enum', False), ('deprecationNote', 'string', False), ('replacedBy', 'string', False)),
+    'metricSpec': (('metricName', 'string', True), ('metricType', 'enum', False), ('expression', 'string', False), ('sourceFormat', 'enum', False), ('physicalColumns', 'array', False), ('dimensions', 'array', False)),
     'ownership': (('owners', 'array', False),),
     'ruleSpec': (('ruleId', 'string', True), ('metric', 'enum', True), ('operator', 'enum', False), ('threshold', 'number', False), ('thresholdMax', 'number', False), ('column', 'string', False), ('columns', 'array', False), ('window', 'string', False), ('percentile', 'number', False), ('pattern', 'string', False), ('acceptedValues', 'array', False), ('customSql', 'string', False), ('expected', 'string', False), ('severity', 'enum', False), ('dimension', 'enum', False), ('onFail', 'enum', False), ('schedule', 'object', False), ('engineHints', 'object', False), ('sourceFrontend', 'enum', False)),
     'tags': (('tags', 'array', False),),
+    'termSpec': (('definition', 'string', False), ('synonyms', 'array', False), ('status', 'enum', False), ('steward', 'string', False), ('relatedTerms', 'array', False), ('sourceRef', 'string', False)),
     'trustLevel': (('level', 'enum', False), ('certifiedBy', 'string', False), ('certifiedAt', 'string', False), ('reason', 'string', False)),
 }
 
@@ -71,9 +75,11 @@ ASPECT_SOURCE_TRACKED: dict[str, bool] = {
     'datasetSchema': False,
     'descriptions': True,
     'lifecycle': False,
+    'metricSpec': True,
     'ownership': True,
     'ruleSpec': True,
     'tags': True,
+    'termSpec': True,
     'trustLevel': True,
 }
 
@@ -96,7 +102,7 @@ LINEAGE_RELATIONSHIPS: tuple[str, ...] = ('consumedBy', 'derivesFrom')
 
 RELATIONSHIP_ENDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     'appliesTo': (('DataContract', 'QualityRule'), ('Dataset', 'Column')),
-    'consumedBy': (('Dataset', 'Column'), ('Dashboard', 'Pipeline')),
+    'consumedBy': (('Dataset', 'Column'), ('Dashboard', 'Pipeline', 'Metric')),
     'contains': (('Platform', 'Container', 'Dataset'), ('Container', 'Dataset', 'Column')),
     'derivesFrom': (('Dataset', 'Column'), ('Dataset', 'Column')),
     'mappedToTerm': (('Dataset', 'Column'), ('GlossaryTerm',)),
@@ -194,6 +200,17 @@ class Lifecycle:
     replaced_by: str = ''
 
 @dataclass
+class MetricSpec:
+    """指标定义（语义层）"""
+
+    metric_name: str
+    metric_type: Literal['SIMPLE', 'RATIO', 'DERIVED', 'CUMULATIVE'] = 'SIMPLE'
+    expression: str = ''
+    source_format: Literal['dg', 'dbt', 'cube'] = 'dg'
+    physical_columns: list[str] = field(default_factory=list)
+    dimensions: list[Any] = field(default_factory=list)
+
+@dataclass
 class Ownership:
     """所有权"""
 
@@ -228,6 +245,17 @@ class Tags:
     """标签"""
 
     tags: list[str] = field(default_factory=list)
+
+@dataclass
+class TermSpec:
+    """术语定义"""
+
+    definition: str = ''
+    synonyms: list[str] = field(default_factory=list)
+    status: Literal['DRAFT', 'APPROVED', 'DEPRECATED'] = 'DRAFT'
+    steward: str = ''
+    related_terms: list[str] = field(default_factory=list)
+    source_ref: str = ''
 
 @dataclass
 class TrustLevel:

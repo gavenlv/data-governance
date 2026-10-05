@@ -63,20 +63,12 @@
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
         </dependency>
-        <dependency>
-            <groupId>io.jsonwebtoken</groupId>
-            <artifactId>jjwt-api</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.jsonwebtoken</groupId>
-            <artifactId>jjwt-impl</artifactId>
-            <scope>runtime</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.jsonwebtoken</groupId>
-            <artifactId>jjwt-jackson</artifactId>
-            <scope>runtime</scope>
-        </dependency>
+        <!--
+          这里曾经依赖 jjwt（api/impl/jackson 三件套）用于 JWT 校验。
+          NFR-SEC-01（docs/23 §4）要求**删除未使用的依赖**：不用的库同样进产物、同样要跟着打补丁，
+          是纯粹的供应链负担。当前的令牌校验是静态令牌（AuthProperties），OIDC/JWKS 尚未实现；
+          将来真正实现 OIDC 时再按当时的维护状况重新选型（不再默认回到 jjwt）。
+        -->
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

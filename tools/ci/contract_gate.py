@@ -79,6 +79,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-no-undetected-consumers", action="store_true")
     parser.add_argument("--fail-closed", action="store_true",
                         help="平台不可达时判为失败（默认：不阻断 + 明确提示）")
+    parser.add_argument("--report-file", default=None,
+                        help="把结论写成 Markdown 报告（供 PR 评论 / Job Summary 使用）")
+    parser.add_argument("--json-out", default=None,
+                        help="把平台返回的原始结论写成 JSON（供后续步骤消费）")
     args = parser.parse_args(argv)
 
     document = load_contract(Path(args.contract))
@@ -100,10 +104,24 @@ def main(argv: list[str] | None = None) -> int:
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         print(f"{RED}门禁接口返回 HTTP {exc.code}：{body[:400]}{RESET}", file=sys.stderr)
+        if args.report_file:
+            Path(args.report_file).write_text(
+                markdown_report(None, args.contract, args.namespace, args.source,
+                                degrade_reason=f"门禁接口返回 HTTP {exc.code}"), encoding="utf-8")
         return 1 if args.fail_closed else _degraded(args)
     except Exception as exc:  # 网络/超时/解析
         print(f"{YELLOW}门禁接口不可达：{exc}{RESET}", file=sys.stderr)
+        if args.report_file:
+            Path(args.report_file).write_text(
+                markdown_report(None, args.contract, args.namespace, args.source,
+                                degrade_reason=f"门禁接口不可达：{exc}"), encoding="utf-8")
         return 1 if args.fail_closed else _degraded(args)
+
+    if args.report_file:
+        Path(args.report_file).write_text(
+            markdown_report(result, args.contract, args.namespace, args.source), encoding="utf-8")
+    if args.json_out:
+        Path(args.json_out).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
     verdict = result.get("verdict", "UNKNOWN")
     color = {"PASS": GREEN, "WARN": YELLOW, "BLOCK": RED}.get(verdict, RESET)
@@ -144,6 +162,83 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {item}")
 
     return int(result.get("exitCode", 1 if verdict == "BLOCK" else 0))
+
+
+def markdown_report(result: dict | None, contract_path: str, namespace: str, source: str,
+                    degrade_reason: str | None = None) -> str:
+    """把门禁结论渲染成 Markdown（PR 评论 / Job Summary 共用同一份）。
+
+    设计要点：**先给结论，再给证据，最后给"这次没检查什么"**。
+    评论里最容易出问题的是最后一段 —— 平台不可达时如果不写清"本次改动未被检查"，
+    读者会把绿色当成"检查通过"。
+    """
+    if result is None:
+        return "\n".join([
+            "## 契约与治理门禁：**未执行**",
+            "",
+            f"- 契约文件：`{contract_path}`（命名空间 `{namespace}`）",
+            f"- 原因：{degrade_reason or '未知'}",
+            "",
+            "> ⚠️ **本次改动没有被检查** —— 这是刻意的降级（门禁挂死在平台故障上会被直接删掉），"
+            "但绿色不代表通过。需要严格模式请在 CI 里加 `--fail-closed`。",
+            "",
+        ])
+
+    verdict = result.get("verdict", "UNKNOWN")
+    icon = {"PASS": "✅", "WARN": "⚠️", "BLOCK": "⛔"}.get(verdict, "❔")
+    lines = [
+        f"## 契约与治理门禁：{icon} {verdict}",
+        "",
+        f"- 契约：`{result.get('contract')}` {result.get('fromVersion')} → {result.get('toVersion')}",
+        f"- 命名空间：`{namespace}` · 来源：`{source}`",
+        f"- 退出码：`{result.get('exitCode')}`",
+        "",
+    ]
+    for label, key in (("阻断项", "blocking"), ("警告", "warnings"), ("通过项", "passed")):
+        items = result.get(key) or []
+        if items:
+            lines.append(f"### {label}（{len(items)}）")
+            lines.extend(f"- {item}" for item in items)
+            lines.append("")
+
+    changes = (result.get("diff") or {}).get("changes") or []
+    if changes:
+        lines.append(f"### 变更清单（{len(changes)}）")
+        lines.append("")
+        lines.append("| 严重度 | 类型 | 列 | 说明 |")
+        lines.append("|---|---|---|---|")
+        for change in changes:
+            lines.append(f"| {change.get('severity')} | {change.get('kind')} | "
+                         f"{change.get('column') or '—'} | {change.get('message')} |")
+        lines.append("")
+
+    impact = result.get("impact") or {}
+    if impact:
+        lines.append(f"### 血缘影响面：下游 {impact.get('downstreamCount')} 个"
+                     f"（关键 {impact.get('criticalCount')} 个）")
+        lines.append("")
+        lines.extend(f"- {item}" for item in (impact.get("downstream") or [])[:10])
+        lines.append("")
+
+    governance = result.get("governance") or {}
+    if governance.get("missing"):
+        lines.append(f"### 治理属性缺失")
+        lines.append("")
+        lines.append(", ".join(f"`{item}`" for item in governance["missing"]))
+        lines.append("")
+
+    consumers = result.get("consumers") or {}
+    if consumers.get("undetected"):
+        lines.append(f"### 未登记消费者（血缘上实际在用）：{len(consumers['undetected'])} 个")
+        lines.append("")
+        lines.extend(f"- `{item}`" for item in consumers["undetected"][:10])
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("判定依据来自平台（契约兼容性 + 血缘影响面 + 治理属性齐备），"
+                 "不是本地静态检查；判定记录已留痕，可在「治理 → 数据契约 → CI 历史」查询。")
+    return "\n".join(lines)
 
 
 def _degraded(args) -> int:

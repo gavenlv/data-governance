@@ -347,6 +347,28 @@ export const api = {
   accessAuditReport: (days = 90) => request<Record<string, unknown>>(`/api/v1/access/audit-report?days=${days}`),
   accessLeastPrivilege: () => request<Record<string, unknown>>('/api/v1/access/least-privilege'),
 
+  // ---------------------------------------------------------------- 引擎审计
+  // 「引擎侧的真实访问」：批准了但没被用过 / 被访问了但没被批准过
+
+  engineAuditIngest: (body: { engine: string; namespace?: string; records: Record<string, unknown>[] }) =>
+    request<EngineAuditIngestResult>('/api/v1/access/engine-audit', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  engineAuditCoverage: () => request<EngineAuditCoverage>('/api/v1/access/engine-audit/coverage'),
+  engineAuditRecords: (params: { resourceUrn?: string; actor?: string; days?: number; limit?: number }) => {
+    const query = new URLSearchParams()
+    if (params.resourceUrn) query.set('resourceUrn', params.resourceUrn)
+    if (params.actor) query.set('actor', params.actor)
+    if (params.days) query.set('days', String(params.days))
+    query.set('limit', String(params.limit ?? 200))
+    return request<{ count: number; records: EngineAuditRecord[] }>(`/api/v1/access/engine-audit?${query}`)
+  },
+  unapprovedAccess: (days = 90, limit = 100) =>
+    request<{ windowDays: number; count: number; unapproved: UnapprovedAccessRow[]; note: string }>(
+      `/api/v1/access/unapproved-access?days=${days}&limit=${limit}`,
+    ),
+
   // -------------------------------------------------------------- 策略（Batch 4）
   policies: () =>
     request<{ count: number; policies: PolicyRow[]; targets: { id: string; note: string }[] }>('/api/v1/policies'),
@@ -374,6 +396,143 @@ export const api = {
   policyCoverage: () => request<PolicyCoverage>('/api/v1/policies/coverage', { method: 'POST' }),
   policyCoverageHistory: () =>
     request<{ count: number; history: Record<string, unknown>[] }>('/api/v1/policies/coverage'),
+
+  // ------------------------------------------------------------------ 可观测性
+  // 异常检测 → SLO 达成 → 事故闭环，是一条链（docs/09 §9.4）
+
+  anomalyScan: (body: {
+    datasetUrn?: string
+    metric?: string
+    method?: 'mad' | 'seasonal_mad'
+    zThreshold?: number
+    lookbackDays?: number
+    seasonalPeriod?: number
+  }) =>
+    request<AnomalyScanResult>('/api/v1/observability/anomalies/scan', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  anomalies: (includeSuppressed = false, limit = 100) =>
+    request<{ count: number; anomalies: AnomalyRow[]; note: string }>(
+      `/api/v1/observability/anomalies?includeSuppressed=${includeSuppressed}&limit=${limit}`,
+    ),
+  anomalyOverview: () => request<Record<string, unknown>>('/api/v1/observability/anomalies/overview'),
+
+  slos: () => request<{ count: number; slos: SloRow[]; note: string }>('/api/v1/observability/slos'),
+  sloUpsert: (document: Record<string, unknown>) =>
+    request<Record<string, unknown>>('/api/v1/observability/slos', {
+      method: 'POST',
+      body: JSON.stringify(document),
+    }),
+  sloMeasure: (name: string) =>
+    request<Record<string, unknown>>(
+      `/api/v1/observability/slos/${encodeURIComponent(name)}/measure`,
+      { method: 'POST' },
+    ),
+
+  incidents: (status?: string, limit = 50) => {
+    const query = new URLSearchParams()
+    if (status) query.set('status', status)
+    query.set('limit', String(limit))
+    return request<{ count: number; incidents: IncidentRow[] }>(
+      `/api/v1/observability/incidents?${query}`,
+    )
+  },
+  incident: (id: number) => request<IncidentDetail>(`/api/v1/observability/incidents/${id}`),
+  incidentOpen: (body: Record<string, unknown>) =>
+    request<Record<string, unknown>>('/api/v1/observability/incidents', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  incidentFromAnomalies: (minutes = 1440) =>
+    request<Record<string, unknown>>('/api/v1/observability/incidents/from-anomalies', {
+      method: 'POST',
+      body: JSON.stringify({ minutes }),
+    }),
+  incidentResolve: (id: number, body: Record<string, unknown>) =>
+    request<Record<string, unknown>>(`/api/v1/observability/incidents/${id}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  incidentAddEvent: (id: number, body: Record<string, unknown>) =>
+    request<Record<string, unknown>>(`/api/v1/observability/incidents/${id}/events`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  observabilityOverview: () => request<Record<string, unknown>>('/api/v1/observability/overview'),
+
+  // ------------------------------------------------------------------------ AI
+
+  aiStatus: () => request<AiStatus>('/api/v1/ai/status'),
+  aiSuggestions: (status = 'PENDING', minConfidence = 0, limit = 100) =>
+    request<{ count: number; suggestions: SuggestionRow[] }>(
+      `/api/v1/ai/suggestions?status=${status}&minConfidence=${minConfidence}&limit=${limit}`,
+    ),
+  aiGenerateSuggestions: (namespace?: string, limit = 50) => {
+    const query = new URLSearchParams()
+    if (namespace) query.set('namespace', namespace)
+    query.set('limit', String(limit))
+    return request<Record<string, unknown>>(`/api/v1/ai/suggestions/generate?${query}`, {
+      method: 'POST',
+    })
+  },
+  aiAcceptSuggestion: (id: number, value?: Record<string, unknown>) =>
+    request<Record<string, unknown>>(`/api/v1/ai/suggestions/${id}/accept`, {
+      method: 'POST',
+      body: JSON.stringify(value ?? {}),
+    }),
+  aiRejectSuggestion: (id: number, reason: string) =>
+    request<Record<string, unknown>>(`/api/v1/ai/suggestions/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  aiSuggestionMetrics: () => request<Record<string, unknown>>('/api/v1/ai/suggestions/metrics'),
+  aiGenerateWithLlm: (urn: string) =>
+    request<Record<string, unknown>>('/api/v1/ai/suggestions/llm', {
+      method: 'POST',
+      body: JSON.stringify({ urn }),
+    }),
+  aiSearch: (q: string, type?: string, limit = 20) => {
+    const query = new URLSearchParams()
+    query.set('q', q)
+    if (type) query.set('type', type)
+    query.set('limit', String(limit))
+    return request<HybridSearchResult>(`/api/v1/ai/search?${query}`)
+  },
+  aiSearchSignal: () => request<Record<string, unknown>>('/api/v1/ai/search/signal'),
+  aiMcpTools: () => request<McpTools>('/api/v1/ai/mcp/tools'),
+  aiMcp: (body: Record<string, unknown>) =>
+    request<Record<string, unknown>>('/api/v1/ai/mcp', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  semanticLayerIngest: (body: { yaml: string; namespace?: string; sourceFormat?: string }) =>
+    request<Record<string, unknown>>('/api/v1/ai/semantic-layer/ingest', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  semanticLayerMetrics: () =>
+    request<{ count: number; metrics: SemanticMetricRow[] }>('/api/v1/ai/semantic-layer/metrics'),
+  semanticLayerMetric: (name: string) =>
+    request<Record<string, unknown>>(`/api/v1/ai/semantic-layer/metrics/${encodeURIComponent(name)}`),
+
+  // --------------------------------------------------------------- Edge Agent
+
+  edgeAgents: () => request<{ count: number; agents: EdgeAgentRow[]; note: string }>(
+    '/api/v1/edge/agents',
+  ),
+  edgeRegisterAgent: (body: Record<string, unknown>) =>
+    request<Record<string, unknown>>('/api/v1/edge/agents', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  edgeRevokeAgent: (agentId: string, reason: string) =>
+    request<Record<string, unknown>>(
+      `/api/v1/edge/agents/${encodeURIComponent(agentId)}/revoke`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
+  edgeReports: () =>
+    request<{ count: number; reports: EdgeReportRow[] }>('/api/v1/edge/reports'),
 }
 
 export interface AssetRow {
@@ -948,6 +1107,69 @@ export interface AccessEventRow {
   occurred_at: string
 }
 
+// ------------------------------------------------------------------ 引擎审计
+
+export interface EngineAuditIngestResult {
+  engine: string
+  namespace: string
+  received: number
+  accepted: number
+  /** 被内容哈希去重掉的条数（日志重放是常态，不是错误） */
+  duplicated: number
+  /** 没能解析到平台资产的条数：**仍然入库**，不是丢弃 */
+  unresolved: number
+  rejected: number
+  rejectedSamples: string[]
+  windowFrom: string | null
+  windowTo: string | null
+  note: string
+}
+
+export interface EngineAuditRecord {
+  id: number
+  engine: string
+  external_id: string | null
+  event_time: string
+  actor: string
+  operation: string | null
+  resource_raw: string
+  resource_urn: string | null
+  columns: string[]
+  rows_scanned: number | null
+  succeeded: boolean
+  resolved: boolean
+  resolve_note: string | null
+  ingested_at: string
+}
+
+export interface EngineAuditCoverage {
+  configured: boolean
+  byEngine: {
+    engine: string
+    records: number
+    window_from: string | null
+    window_to: string | null
+    resolved: number
+    unresolved: number
+    actors: number
+  }[]
+  lastIngest: Record<string, unknown>[]
+  totalRecords: number
+  unresolvedRecords: number
+  resolutionNote: string
+  howToFeed: string
+}
+
+export interface UnapprovedAccessRow {
+  actor: string
+  resource_urn: string
+  resource_raw: string
+  engine: string
+  queries: number
+  last_access_at: string
+  first_access_at: string
+}
+
 // ---------------------------------------------------------------------- 策略
 
 export interface PolicyRow {
@@ -986,4 +1208,215 @@ export interface PolicyCoverage {
   uncoveredHighClassification: { urn: string; displayName: string; classification: string; risk: string }[]
   knownBlindSpots: string[]
   note: string
+}
+
+// ---------------------------------------------------------------- 可观测性
+
+export interface AnomalyRow {
+  id: number
+  dataset_urn: string
+  column_name: string | null
+  metric: string
+  window_start: string
+  observed: number | null
+  baseline: number | null
+  score: number | null
+  method: 'static_threshold' | 'mad' | 'seasonal_mad'
+  threshold: number | null
+  severity: 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+  /** SOURCE = 源侧异常；PROPAGATED = 由上游传导（会被抑制）；ISOLATED = 无上游异常 */
+  propagation: 'SOURCE' | 'PROPAGATED' | 'ISOLATED'
+  propagated_from: string | null
+  samples: number
+  suppressed: boolean
+  suppress_reason: string | null
+  detected_at: string
+}
+
+export interface AnomalyDetection {
+  id: number
+  dataset: string
+  column: string | null
+  metric: string
+  observed: number | null
+  baseline: number | null
+  score: number | null
+  method: string
+  severity: string
+  propagation: string
+  propagatedFrom: string | null
+  samples: number
+  suppressed: boolean
+  suppressReason: string | null
+}
+
+export interface AnomalyScanResult {
+  method: string
+  zThreshold: number
+  lookbackDays: number
+  seriesScanned: number
+  detectionCount: number
+  detections: AnomalyDetection[]
+  /** 样本不足而未判定的序列 —— 「没判定」不等于「正常」，必须显式回报 */
+  skipped: { series: string; samples: number; reason: string }[]
+}
+
+export interface SloRow {
+  name: string
+  description: string | null
+  slo_type: 'freshness' | 'quality_pass_rate' | 'availability' | 'schema_stability'
+  target: number
+  threshold_seconds: number | null
+  window_days: number
+  resource_scope: Record<string, unknown>
+  owner: string | null
+  status: string
+  updated_at: string
+  last_attainment: number | null
+  last_measured_at: string | null
+  last_met: boolean | null
+  error_budget_remaining: number | null
+}
+
+export interface IncidentRow {
+  id: number
+  title: string
+  severity: string
+  status: 'OPEN' | 'MITIGATING' | 'RESOLVED' | 'POSTMORTEM_DONE'
+  primary_urn: string | null
+  affected_urns: string[]
+  source: string
+  source_ref: string | null
+  owner: string | null
+  started_at: string
+  detected_at: string | null
+  resolved_at: string | null
+  closed_loop_rule_urn: string | null
+  postmortem: Record<string, unknown> | null
+  event_count: number
+}
+
+export interface IncidentDetail extends IncidentRow {
+  timeline: {
+    event_type: string
+    message: string
+    actor: string | null
+    detail: Record<string, unknown>
+    occurred_at: string
+  }[]
+}
+
+// ---------------------------------------------------------------------- AI
+
+export interface AiStatus {
+  suggestionDeterministic: { available: boolean; note: string }
+  suggestionLlm: { capability: string; configured: boolean; howToEnable: string; whyItMatters: string }
+  semanticSearch: {
+    available: boolean
+    lexical: boolean
+    glossaryExpansion: boolean
+    /** 向量路是否可用：当前恒为 false（没有 embedding 服务），界面要如实显示 */
+    vector: boolean
+    note: string
+  }
+  mcp: { available: boolean; note: string }
+  semanticLayer: { available: boolean; note: string }
+}
+
+export interface SuggestionRow {
+  id: number
+  entity_urn: string
+  aspect_type: string | null
+  field: string | null
+  kind: string
+  proposal: Record<string, unknown>
+  rationale: string
+  confidence: number
+  generator: 'deterministic' | 'llm' | 'human'
+  generator_ref: string | null
+  evidence: Record<string, unknown>
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'SUPERSEDED'
+  reviewed_by: string | null
+  reviewed_at: string | null
+  review_note: string | null
+  created_at: string
+}
+
+export interface HybridSearchHit {
+  urn: string
+  entityType: string
+  displayName: string | null
+  namespace: string | null
+  platform: string | null
+  classification: string | null
+  retrievers: string[]
+  rrfScore: number
+  expandedFrom?: string
+}
+
+export interface HybridSearchResult {
+  query: string
+  count: number
+  results: HybridSearchHit[]
+  retrievers: { name: string; weight: number; available: boolean; note: string }[]
+  fusion: { method: string; k: number; why: string }
+  indexLag: IndexLag
+}
+
+export interface McpTools {
+  protocolVersion: string
+  transport: string
+  tools: {
+    name: string
+    description: string
+    requiredPermission: string
+    inputSchema: Record<string, unknown>
+  }[]
+  hiddenByPermission: number
+  permissionModel: string
+  notImplemented: string[]
+}
+
+export interface SemanticMetricRow {
+  id: number
+  name: string
+  display_name: string | null
+  description: string | null
+  metric_type: string
+  expression: string | null
+  physical_columns: string[]
+  dimensions: unknown
+  source_format: string
+  source_ref: string | null
+  owner: string | null
+  status: string
+  updated_at: string
+}
+
+// --------------------------------------------------------------- Edge Agent
+
+export interface EdgeAgentRow {
+  agent_id: string
+  display_name: string | null
+  namespace: string
+  capabilities: string[]
+  version: string | null
+  status: 'ACTIVE' | 'PAUSED' | 'REVOKED'
+  last_heartbeat_at: string | null
+  registered_at: string
+  registered_by: string | null
+  /** 距上次心跳的秒数：判断 Agent 是否存活的主要信号 */
+  seconds_since_heartbeat: number | null
+}
+
+export interface EdgeReportRow {
+  id: number
+  agent_id: string
+  display_name: string | null
+  report_type: 'heartbeat' | 'datasets'
+  namespace: string | null
+  entity_count: number
+  accepted: boolean
+  reject_reason: string | null
+  received_at: string
 }
