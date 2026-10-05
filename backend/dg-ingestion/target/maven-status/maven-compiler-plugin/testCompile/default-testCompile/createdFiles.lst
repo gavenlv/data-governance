@@ -1,6 +1,0 @@
-com\datagovernance\ingestion\schedule\JdbcTargetTest.class
-com\datagovernance\ingestion\connectors\MongoTypeInferenceTest.class
-com\datagovernance\ingestion\connectors\ConnectorDsnTest.class
-com\datagovernance\ingestion\GuardConfigTest.class
-com\datagovernance\ingestion\schedule\ScheduleDefinitionTest.class
-com\datagovernance\ingestion\schedule\CronUtilTest.class

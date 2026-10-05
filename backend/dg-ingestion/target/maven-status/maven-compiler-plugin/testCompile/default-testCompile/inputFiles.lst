@@ -1,6 +1,0 @@
-D:\workspace\github\data-governance\backend\dg-ingestion\src\test\java\com\datagovernance\ingestion\schedule\ScheduleDefinitionTest.java
-D:\workspace\github\data-governance\backend\dg-ingestion\src\test\java\com\datagovernance\ingestion\GuardConfigTest.java
-D:\workspace\github\data-governance\backend\dg-ingestion\src\test\java\com\datagovernance\ingestion\connectors\ConnectorDsnTest.java
-D:\workspace\github\data-governance\backend\dg-ingestion\src\test\java\com\datagovernance\ingestion\schedule\JdbcTargetTest.java
-D:\workspace\github\data-governance\backend\dg-ingestion\src\test\java\com\datagovernance\ingestion\connectors\MongoTypeInferenceTest.java
-D:\workspace\github\data-governance\backend\dg-ingestion\src\test\java\com\datagovernance\ingestion\schedule\CronUtilTest.java
