@@ -268,6 +268,111 @@ public class MetadataService {
                 """, urn, aspectType);
     }
 
+    /**
+     * 资产级版本时间线：该资产**全部 aspect** 的当前版本与历史版本，按时间倒序。
+     *
+     * <p>刻意<b>不带 data</b>：时间线是列表页整体加载的，若每个版本都带上全量 JSON，
+     * 一次翻页就会变成几 MB 的响应。要看某个版本的内容，用
+     * {@link #aspectVersion(String, String, long)}。
+     */
+    public List<Map<String, Object>> versionTimeline(String urn) {
+        return jdbc.queryForList("""
+                SELECT aspect_type, version, updated_by, updated_at, run_id, TRUE AS is_current
+                  FROM aspect WHERE urn = ?
+                UNION ALL
+                SELECT aspect_type, version, updated_by, updated_at, run_id, FALSE
+                  FROM aspect_history WHERE urn = ?
+                ORDER BY updated_at DESC, aspect_type, version DESC
+                """, urn, urn);
+    }
+
+    /** 读取**指定版本**的 aspect 内容（当前版本与历史版本都支持）。 */
+    public Optional<Map<String, Object>> aspectVersion(String urn, String aspectType, long version) {
+        List<Map<String, Object>> current = jdbc.queryForList(
+                "SELECT data FROM aspect WHERE urn = ? AND aspect_type = ? AND version = ?",
+                urn, aspectType, version);
+        if (!current.isEmpty()) {
+            return Optional.of(readJson(current.get(0).get("data")));
+        }
+        List<Map<String, Object>> history = jdbc.queryForList(
+                "SELECT data FROM aspect_history WHERE urn = ? AND aspect_type = ? AND version = ?",
+                urn, aspectType, version);
+        return history.isEmpty()
+                ? Optional.empty()
+                : Optional.of(readJson(history.get(0).get("data")));
+    }
+
+    /**
+     * 把某个 aspect 回滚到指定历史版本。
+     *
+     * <p>实现刻意走 SQL 而不是复用 {@code upsertAspect}：upsertAspect 会做<b>字段级来源合并</b>
+     * （MANUAL 不被 AUTO_COLLECTED 覆盖），那在"回滚"场景里恰恰是错的 ——
+     * 使用者明确要求"回到第 N 版"，就应该整段还原（data 与 field_sources 一起），
+     * 否则回滚结果会是一份"半新半旧"的混合体，比不回滚更难理解。
+     *
+     * <p><b>历史不可篡改</b>：回滚不是删掉后续版本，而是<b>追加一个新版本</b>
+     * （内容等于目标版本）。因此 aspect_history 始终是完整的审计轨迹，
+     * "谁在什么时候回滚了什么"也能从版本链上直接读出来。
+     */
+    @Transactional
+    public Map<String, Object> rollbackAspect(String urn, String aspectType, long targetVersion,
+                                             String actor) {
+        if (targetVersion < 1) {
+            throw new MetadataException.ValidationFailed(
+                    List.of("目标版本必须 >= 1，实际 " + targetVersion));
+        }
+        List<Map<String, Object>> current = jdbc.queryForList(
+                "SELECT version FROM aspect WHERE urn = ? AND aspect_type = ? FOR UPDATE",
+                urn, aspectType);
+        if (current.isEmpty()) {
+            throw new MetadataException.NotFound("aspect 不存在：" + urn + "#" + aspectType);
+        }
+        long currentVersion = ((Number) current.get(0).get("version")).longValue();
+        if (targetVersion == currentVersion) {
+            throw new MetadataException.Conflict(
+                    "目标版本 %d 就是当前版本，无需回滚".formatted(targetVersion));
+        }
+        List<Map<String, Object>> target = jdbc.queryForList("""
+                SELECT data, field_sources FROM aspect_history
+                 WHERE urn = ? AND aspect_type = ? AND version = ?
+                """, urn, aspectType, targetVersion);
+        if (target.isEmpty()) {
+            throw new MetadataException.NotFound(
+                    "历史版本不存在：%s#%s@%d（历史表只留有被覆盖过的版本，最新版在 aspect 表）"
+                            .formatted(urn, aspectType, targetVersion));
+        }
+        Map<String, Object> restored = readJson(target.get(0).get("data"));
+
+        // 1) 先把当前版本归档：保证版本链不断，回滚本身也成为历史的一部分
+        jdbc.update("""
+                INSERT INTO aspect_history (urn, aspect_type, version, data, field_sources, updated_by, updated_at, run_id)
+                SELECT urn, aspect_type, version, data, field_sources, updated_by, updated_at, run_id
+                  FROM aspect WHERE urn = ? AND aspect_type = ?
+                """, urn, aspectType);
+        // 2) 整体还原到目标版本，版本号 +1（回滚 = 新版本，而不是删历史）
+        jdbc.update("""
+                UPDATE aspect SET data = CAST(? AS jsonb), field_sources = CAST(? AS jsonb),
+                                  version = version + 1, updated_by = ?, updated_at = now(), run_id = NULL
+                 WHERE urn = ? AND aspect_type = ?
+                """, writeJson(restored), target.get(0).get("field_sources"),
+                actor == null || actor.isBlank() ? "rollback" : "rollback:" + actor,
+                urn, aspectType);
+
+        long newVersion = currentVersion + 1;
+        long eventSeq = emitEvent(EVENT_ASPECT_UPSERTED, urn, aspectType, newVersion,
+                Map.of("data", restored, "source", "ROLLBACK", "restoredFrom", targetVersion), null);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("urn", urn);
+        payload.put("aspectType", aspectType);
+        payload.put("restoredFrom", targetVersion);
+        payload.put("previousVersion", currentVersion);
+        payload.put("version", newVersion);
+        payload.put("eventSeq", eventSeq);
+        payload.put("note", "回滚是追加新版本：未删除任何历史版本，版本链完整保留");
+        return payload;
+    }
+
     /** 按采集批次整体回滚（ADR-005）。 */
     @Transactional
     public Map<String, Object> rollbackRun(String runId) {

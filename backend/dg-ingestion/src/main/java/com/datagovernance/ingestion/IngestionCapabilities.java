@@ -15,6 +15,26 @@ public class IngestionCapabilities implements CapabilityProvider {
         return List.of(
                 CapabilityDescriptor.implemented("ingestion.framework", "采集框架", "D1 元数据底座",
                         "docs/09 §9.1", "Source→Normalizer→Sink 流水线；连接器只读不写，编排统一复用"),
+                CapabilityDescriptor.implemented("ingestion.datasource-registry", "数据源管理（连接复用 + 凭据加密）",
+                        "D1 元数据底座",
+                        "docs/09 §9.1",
+                        "数据源连接可保存、编辑、测试与一键扫描（POST /api/v1/datasources/{id}/scan）："
+                                + "连接只录一次，之后扫描/测试都不必重敲 DSN 与口令；"
+                                + "编辑时未填写的凭据字段保持原值",
+                        List.of("凭据以 **AES-256-GCM** 加密后单独存一列（sql/015_datasource.sql），"
+                                        + "密钥来自环境变量 DG_SECRET_KEY 且**不在库内**："
+                                        + "数据库备份泄漏不等于凭据泄漏",
+                                "**未配置 DG_SECRET_KEY 时保存连接返回 502 并说明如何生成密钥**，"
+                                        + "刻意不退化成明文存储或内置弱密钥 —— "
+                                        + "静默降级会让人以为凭据已加密而其实没有",
+                                "接口永不回显凭据：只返回 hasCredentials 与**已脱敏**的 endpoint"
+                                        + "（去掉 user:password@ 与 ?password= 一类参数）",
+                                "扫描完全复用既有采集链路（连接器注册表 + 护栏 + 快照 + 运行记录 + 事件流），"
+                                        + "不存在第二条采集路径",
+                                "权限独立于 asset:read：连接信息属采集运维面，"
+                                        + "READER 不可见、STEWARD 只读、EDITOR/ADMIN 可写",
+                                "未实现：连接凭据的外部密钥管理（KMS/Vault）与轮换审计，"
+                                        + "当前是单密钥静态配置")),
                 CapabilityDescriptor.implemented("ingestion.postgres", "PostgreSQL 连接器", "D1 元数据底座",
                         "docs/09 §9.1", "information_schema + obj_description/col_description，含主键与注释"),
                 CapabilityDescriptor.implemented("ingestion.guard", "采集护栏", "D1 元数据底座",

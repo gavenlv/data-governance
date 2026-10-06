@@ -10,7 +10,7 @@
 
 **框架完整、界面完整、未实现的功能全部显式标注** —— 控制面的 `/api/v1/capabilities` 是唯一的
 状态真相源，界面按它渲染状态徽标，因此不会出现「界面以为有、接口其实没有」的漂移。
-当前 **42 项能力：34 已实现 / 7 部分实现 / 1 未实现**（`GET /api/v1/capabilities` 可查明细）。
+当前 **44 项能力：36 已实现 / 7 部分实现 / 1 未实现**（`GET /api/v1/capabilities` 可查明细）。
 仅剩的未实现项是 `core.index-opensearch`（检索后端替换，触发条件未到）；7 项部分实现的缺口在能力说明里逐条列出。
 
 分批实施进度见 `docs/22`：**Batch 1（检索 / 权限 / 调度 / SQL 解析）、Batch 2（剖析 / 规则引擎 /
@@ -46,6 +46,9 @@ mvn -B package -DskipTests
 cd ..
 $env:DG_MODEL_DIR="$PWD\model"; $env:DG_SQL_DIR="$PWD\sql"
 $env:DG_WEB_DIST="$PWD\web\dist"; $env:DG_API_PORT='8081'
+# 数据源凭据加密密钥（AES-256-GCM）：openssl rand -base64 32。
+# 刻意不设默认值 —— 未配置时保存连接会被拒绝（502 secret_key_not_configured），绝不明文落库。
+$env:DG_SECRET_KEY='<上一步生成的 Base64 密钥>'
 java -jar backend\dg-api\target\dg-api-0.1.0.jar
 #   界面:  http://127.0.0.1:8081/      （右上角填令牌 dev-admin-token）
 #   接口:  http://127.0.0.1:8081/docs
@@ -75,11 +78,11 @@ pnpm dev        # http://127.0.0.1:5173，/api 自动代理到 8081
 ### 3) 验证
 
 ```powershell
-python tools/java_e2e_verify.py     # Java 控制面端到端（147 项；自动拉起并关闭 SQL 解析侧车）
-cd backend; mvn -B test             # Java 单元测试（150 项，含数组绑定门禁）
+python tools/java_e2e_verify.py     # Java 控制面端到端（153 项；自动拉起并关闭 SQL 解析侧车）
+cd backend; mvn -B test             # Java 单元测试（171 项，含数组绑定门禁）
 $env:PYTHONPATH='src'; python -m pytest -q   # Python 参考实现（250 项）
-python tools/ui_render_check.py     # 界面渲染冒烟（无头 Chrome，逐标签页 dump DOM；10 项）
-python -m pytest e2e -p no:cacheprovider --gherkin-terminal-reporter   # 全项目 BDD（Gherkin，157 场景）
+python tools/ui_render_check.py     # 界面渲染冒烟（无头 Chrome，逐标签页 dump DOM；11 项）
+python -m pytest e2e -p no:cacheprovider --gherkin-terminal-reporter   # 全项目 BDD（Gherkin，167 场景）
 python -m pytest e2e -m "not external" --gherkin-terminal-reporter     # 跳过外部依赖（ClickHouse/Mongo/Superset/Chrome 缺失时）
 python tools/dependency_audit.py --self-test  # 供应链：先证明扫描链路有效（反向用例）
 python tools/dependency_audit.py              # 供应链：0 干净 / 1 有阻断项 / 2 未验证
@@ -167,13 +170,13 @@ docs/                           调研报告（research/）+ 设计方案（06�
 | 入口 | 已实现 | 未实现（界面已标注设计说明） |
 |---|---|---|
 | **发现** | **全文检索（标识符切分 + 中文二元切分 + 前置授权过滤 + 分面 + 索引水位）**、资产浏览、最近更新 | 词典分词（现为 bigram）、向量检索、数据产品货架 |
-| **资产** | 资产列表、资产详情（结构/Aspect/Owner/分级）、版本历史；**多源资产**（ClickHouse / MongoDB / Superset 仪表板） | 质量状态页签、协作与评论 |
+| **资产** | 资产列表、资产详情（结构/Aspect/Owner/分级）、**版本历史（时间线 / 查看历史版本 / 字段级 diff / 回滚 = 追加新版本，历史不可篡改）**；**多源资产**（ClickHouse / MongoDB / Superset 仪表板） | 质量状态页签、协作与评论 |
 | **血缘** | 列级血缘图、OpenLineage 接收、血缘质量报告、**SQL 静态解析入库（侧车）**、**影响分析/爆炸半径**、**交互式血缘画布（线型=可信度、路径高亮、边可确认/驳回）** | 时间轴回放、大图聚合视图、列级端到端路径追踪 |
 | **质量** | **剖析（精度标注 + 隐私约束）**、**规则引擎（YAML / SQL 断言 / dbt tests 三前端）**、执行记录、**数据契约与违约事件**、**CI 门禁 + GitHub/GitLab 插件（PR 评论回写）** | 分布漂移（PSI/KS）与 STL 分解 |
 | **可观测** | **异常检测（MAD / 季节性 MAD、样本不足显式跳过、上游抑制下游）**、**SLO 与错误预算（无数据时回报 no_data）**、**事故时间线与影响面 + 闭环强制沉淀规则** | 告警通道（邮件/IM/on-call）与告警状态机 |
 | **治理** | **访问申请与审批**、**授权与到期回收**、**定期复核与最小权限复盘（使用证据来自引擎审计）**、**引擎审计摄入（真实访问 / 未授权访问清单）**、**策略建模/编译/下发/回滚 + 覆盖率度量**、**审计取证（覆盖范围随实际数据动态生成）** | 策略直推执行引擎、多级会签与代理审批、术语复核、健康分 |
 | **AI 与 Agent** | **建议收件箱（人工采纳才落库、来源 AI_GENERATED、驳回需理由、采纳率统计）**、**混合检索（词法 + 术语同义扩展 + RRF）**、**MCP 工具出口（按权限裁剪、全量审计、Agent 只能提建议）**、**语义层指标接入与口径血缘** | 大模型推理（未配置即明确失败）、向量检索、MCP 的 resources/prompts/sampling |
-| **管理** | 采集（含护栏）、采集健康度、**采集调度（YAML apply + cron + advisory lock 互斥）**、**检索索引维护（水位/重建）**、**Edge Agent 推模式（注册/心跳/上报/吊销/上报记录）**、模型摘要、**能力清单** | 告警、更多连接器、Go 单二进制 Agent 本体、OIDC/JWKS |
+| **管理** | 采集（含护栏）、**数据源管理（连接一次录入反复复用：凭据 AES-256-GCM 加密且接口永不回显，留空即保持原值，可测试连接/一键扫描）**、采集健康度、**采集调度（YAML apply + cron + advisory lock 互斥）**、**检索索引维护（水位/重建）**、**Edge Agent 推模式（注册/心跳/上报/吊销/上报记录）**、模型摘要、**能力清单** | 告警、更多连接器、Go 单二进制 Agent 本体、OIDC/JWKS |
 
 ## 文档导航
 

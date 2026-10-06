@@ -381,13 +381,28 @@ def severity_rank(severity: str) -> int:
 
 
 def load_waivers() -> list[dict]:
-    """读取豁免登记（YAML）。未登记的漏洞不接受任何豁免 —— 这是纪律的一部分。"""
+    """读取豁免登记（YAML）。未登记的漏洞不接受任何豁免 —— 这是纪律的一部分。
+
+    注意：YAML 会把 `expires: 2026-11-05` 解析成 **`datetime.date` 对象**，
+    直接塞进 JSON 报告会抛 `TypeError`（这个错误真实发生过）。
+    因此这里统一把日期字段归一成 ISO 字符串：报告是给人看与归档的，字符串最省事。
+    """
     if not WAIVER_FILE.exists():
         return []
+    import datetime as dt
+
     import yaml
 
     payload = yaml.safe_load(WAIVER_FILE.read_text(encoding="utf-8")) or {}
-    return payload.get("waivers", []) or []
+    waivers = payload.get("waivers", []) or []
+    normalized = []
+    for waiver in waivers:
+        item = dict(waiver)
+        expires = item.get("expires")
+        if isinstance(expires, (dt.date, dt.datetime)):
+            item["expires"] = expires.isoformat()[:10]
+        normalized.append(item)
+    return normalized
 
 
 def waiver_for(finding: dict, waivers: list[dict]) -> tuple[dict | None, str | None]:
@@ -416,11 +431,14 @@ def waiver_for(finding: dict, waivers: list[dict]) -> tuple[dict | None, str | N
 
 
 def self_test() -> int:
-    """自检：用**已知有漏洞**的版本验证扫描链路真的在工作。
+    """自检：验证扫描链路与**豁免机制**都真的在工作。
 
     为什么必须有它：报告"0 条漏洞"有两种可能 —— 真的干净，或者扫描器坏了。
     两种情况下人看到的东西一模一样，因此必须有一个反向用例把"扫描器没工作"钉死。
-    这里的样本是历史上有名的版本，若查不出东西，说明 OSV 链路/解析逻辑已失效。
+
+    豁免机制同样需要反向用例：一旦豁免逻辑写错（比如到期判断反了、或按 ID 前缀宽松匹配），
+    就会变成"想豁免什么都能豁免" —— 那比没有豁免更糟。因此这里同时验证：
+    **有效豁免被接受、过期豁免被拒绝、字段不全的豁免被拒绝。**
     """
     probes = [
         {"ecosystem": "Maven", "name": "com.fasterxml.jackson.core:jackson-databind",
@@ -440,7 +458,34 @@ def self_test() -> int:
             return EXIT_UNVERIFIED
         print(f"自检通过：{probe['name']}@{probe['version']} 检出 {len(hits)} 条"
               f"（示例 {hits[0]['id']} / {hits[0]['severity']}）")
-    print("自检结论：扫描链路与严重度解析均有效，'0 条漏洞' 才是可信的。")
+
+    # ---- 豁免机制的反向用例 ----
+    import datetime as dt
+
+    today = dt.date.today()
+    sample = {"id": "GHSA-test-0000-0000", "package": "org.example:lib"}
+    valid = {"id": sample["id"], "package": sample["package"], "reason": "r",
+             "owner": "o", "expires": (today + dt.timedelta(days=10)).isoformat()}
+    expired = dict(valid, expires=(today - dt.timedelta(days=1)).isoformat())
+    incomplete = {"id": sample["id"], "package": sample["package"], "expires": valid["expires"]}
+
+    if waiver_for(sample, [valid])[0] is None:
+        print("自检失败：有效期内的豁免没有被接受 —— 豁免机制失效（会导致无法交付）")
+        return EXIT_UNVERIFIED
+    problem = waiver_for(sample, [expired])[1]
+    if not problem or "到期" not in problem:
+        print(f"自检失败：过期豁免没有被拒绝（返回 {problem}）—— "
+              f"这会让'到期自动重新阻断'形同虚设")
+        return EXIT_UNVERIFIED
+    problem = waiver_for(sample, [incomplete])[1]
+    if not problem or "字段不全" not in problem:
+        print(f"自检失败：字段不全的豁免没有被拒绝（返回 {problem}）")
+        return EXIT_UNVERIFIED
+    if waiver_for({**sample, "id": "GHSA-other"}, [valid])[0] is not None:
+        print("自检失败：豁免按非精确 ID 匹配 —— 变成了'整包豁免'")
+        return EXIT_UNVERIFIED
+    print("自检通过：豁免机制（有效接受 / 过期拒绝 / 字段不全拒绝 / 精确 ID 匹配）")
+    print("自检结论：扫描链路、严重度解析与豁免机制均有效，'0 条漏洞' 与豁免才都可信。")
     return EXIT_OK
 
 
@@ -555,7 +600,7 @@ def write_report(counts: dict, runtime_count: int, findings: list[dict], blockin
     if extra:
         report.update(extra)
     (REPORT_DIR / "dependency-audit.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print("\n报告已写入：security/reports/dependency-audit.json")
 
 

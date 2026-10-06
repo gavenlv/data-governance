@@ -1,11 +1,15 @@
 package com.datagovernance.api.web;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
+import com.datagovernance.api.security.Subjects;
 import com.datagovernance.core.MetadataService;
 import com.datagovernance.lineage.LineageService;
 import com.datagovernance.lineage.SqlParseSidecarClient;
+import com.datagovernance.policy.AccessPolicy;
+import com.datagovernance.policy.Subject;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -25,18 +29,50 @@ public class LineageController {
     private final com.datagovernance.lineage.ImpactService impactService;
     private final com.datagovernance.lineage.SqlParseService parseService;
     private final com.datagovernance.lineage.LineageSubgraphService subgraphService;
+    private final com.datagovernance.lineage.LineageCheckService checkService;
 
     public LineageController(MetadataService metadata, LineageService lineage,
                              SqlParseSidecarClient sidecar,
                              com.datagovernance.lineage.ImpactService impactService,
                              com.datagovernance.lineage.SqlParseService parseService,
-                             com.datagovernance.lineage.LineageSubgraphService subgraphService) {
+                             com.datagovernance.lineage.LineageSubgraphService subgraphService,
+                             com.datagovernance.lineage.LineageCheckService checkService) {
         this.metadata = metadata;
         this.lineage = lineage;
         this.sidecar = sidecar;
         this.impactService = impactService;
         this.parseService = parseService;
         this.subgraphService = subgraphService;
+        this.checkService = checkService;
+    }
+
+    /**
+     * 血缘 L2 检查发现（"覆盖率为什么低"的可分答案）。
+     *
+     * <p>把"能补的"（缺 schema → 采集即可）与"需改 SQL 的"（列有歧义）分开，
+     * 而不是让它们一起消失在解析警告里。
+     */
+    @GetMapping("/checks")
+    public Map<String, Object> checks(@RequestParam(required = false) String checkType,
+                                      @RequestParam(required = false) String targetUrn,
+                                      @RequestParam(defaultValue = "30") Integer days,
+                                      @RequestParam(defaultValue = "200") int limit) {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "lineage:read");
+        List<Map<String, Object>> rows = checkService.findings(checkType, targetUrn, days, limit);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("count", rows.size());
+        payload.put("findings", rows);
+        payload.put("summary", checkService.summary(days));
+        return payload;
+    }
+
+    /** L2 检查汇总（按类型分布 + 可操作清单）。 */
+    @GetMapping("/checks/summary")
+    public Map<String, Object> checksSummary(@RequestParam(defaultValue = "30") Integer days) {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "lineage:read");
+        return checkService.summary(days);
     }
 
     /** OpenLineage 兼容端点（作业运行时上报）。 */
@@ -61,6 +97,7 @@ public class LineageController {
         return payload;
     }
 
+    /** SQL 解析能力与覆盖率相关的质量报告（包含 L2 检查的可操作清单）。 */
     @GetMapping("/quality")
     public Map<String, Object> quality() {
         Map<String, Object> payload = new LinkedHashMap<>(lineage.quality());

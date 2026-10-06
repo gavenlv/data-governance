@@ -1,23 +1,37 @@
 # ============================================================================
-# 依赖漏洞豁免登记（NFR-SEC-01 的例外台账）
+# 依赖漏洞豁免登记（NFR-SEC-01 的例外台账，docs/23 §5）
 #
-# 规则（docs/23 §5）：
+# 规则：
 #   1. **能修就修、能换就换**：豁免是最后手段，不是常规操作；
 #   2. 每条豁免必须写清 reason（为什么不能修）+ owner（谁负责）+ expires（到期日）；
-#   3. 到期未续期 → 审计工具把它重新算作阻断项（`tools/dependency_audit.py` 会校验）；
-#   4. 豁免只对**指定的 CVE/GHSA ID + 包**生效，不做"整包豁免"。
-#
-# 当前状态：**无豁免**。所有已发现漏洞都已通过升级修复（见 docs/23 §7）。
+#   3. 到期未续期 → `tools/dependency_audit.py` 把它**重新算作阻断项**；
+#   4. 豁免只对**指定的 CVE/GHSA ID + 包**生效，不做"整包豁免"；
+#   5. reason 里必须写清**可达性证据**（为什么这个漏洞在我们这里打不到），
+#      而不是只写"风险可接受" —— 后者无法被复核。
 # ============================================================================
 apiVersion: dg.security/v1
 kind: DependencyWaivers
 
-waivers: []
-# 示例（仅格式示范，不要照抄进生产）：
-# waivers:
-#   - id: GHSA-xxxx-xxxx-xxxx          # 必须精确到漏洞编号
-#     package: org.example:lib          # 精确到受影响的包
-#     reason: "该漏洞路径要求开启 X 特性，本平台不使用；上游承诺 1.2.3 修复"
-#     owner: security@example.com
-#     expires: 2026-03-31               # 到期后自动重新阻断
-#     tracking: "JIRA-SEC-123"
+waivers:
+  # ---------------------------------------------------------------------------
+  # 首条真实豁免（2026-10-06 登记）。
+  #
+  # 背景：CRITICAL 且**上游 6.2.x 线尚无修复版本** —— 修复只出现在 Spring
+  # Framework 7.0.9（即 Spring Boot 4.x）。按 NFR 的时限要求，CRITICAL 需 7 天内处理；
+  # 当"修"与"换"都不可行时，唯一诚实的做法是：把可达性论证清楚、登记带到期日的豁免、
+  # 并加一条**守卫测试**让"打不到"这件事可验证而不是口头承诺。
+  # ---------------------------------------------------------------------------
+  - id: GHSA-pc63-qcmh-9cmg            # CVE-2026-47884：XsltView 的路径限制缺陷
+    package: org.springframework:spring-webmvc
+    reason: >-
+      漏洞要求同时满足两个条件：① 应用使用 XsltView；② 存在 /** 映射且**视图名未显式指定**。
+      本平台两个条件都不成立：全仓库没有任何 XsltView / XmlViewResolver / XSLT 引用；
+      WebConfig 里的三个视图控制器**全部显式** setViewName("forward:/index.html")。
+      上游 6.2.x 线当前没有修复版本（OSV: 6.2.0–6.2.19 last_affected、无 fixed），
+      升级到修复版本需要迁移到 Spring Boot 4.x（Spring Framework 7），
+      属独立项目（见 docs/23 §8 第 7 条），不适合与漏洞修复混做。
+      守卫：dg-api 的 XsltViewReachabilityGuardTest 会在有人引入 XsltView
+      或去掉显式视图名时立即失败。
+    owner: data-platform-team（需在安全评审会上指派具体负责人）
+    expires: 2026-11-05                # 30 天；到期自动重新阻断，届时需复核或续期
+    tracking: docs/23 §7.7 / docs/21 §21.5

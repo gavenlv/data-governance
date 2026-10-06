@@ -8,6 +8,7 @@ import {
   List,
   Row,
   Space,
+  Spin,
   Statistic,
   Table,
   Tabs,
@@ -22,6 +23,7 @@ import LineageCanvas from '../components/LineageCanvas'
 import { CapabilityBadge } from '../components/CapabilityBadge'
 import { NotImplementedCard } from '../components/NotImplementedCard'
 import { useCapabilities } from '../hooks/useCapabilities'
+import { useTabParam } from '../hooks/useTabParam'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -30,6 +32,8 @@ export default function LineagePage() {
   const capabilities = useCapabilities()
   const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
+  // 页签可深链（?tab=quality）：既能分享"血缘质量"这一步，也让逐标签页的渲染检查可覆盖到它
+  const [tab, setTab] = useTabParam('impact')
   // 从资产页「查看血缘」带过来的 urn 直接作为焦点，省掉一次手工粘贴
   const initialUrn = searchParams.get('urn') ?? (location.state as { urn?: string } | null)?.urn ?? ''
   const [urn, setUrn] = useState(initialUrn)
@@ -162,6 +166,8 @@ export default function LineagePage() {
       </Card>
 
       <Tabs
+        activeKey={tab}
+        onChange={setTab}
         items={[
           { key: 'impact', label: '影响分析', children: <ImpactTab direction={direction} depth={depth} onUrn={setTableUrn} impact={impact} /> },
           { key: 'quality', label: '血缘质量', children: <QualityTab qualityData={qualityData} sidecarHealth={sidecarHealth} /> },
@@ -345,6 +351,18 @@ function QualityTab({
           </Card>
         </Col>
       </Row>
+      <Card
+        size="small"
+        title="血缘 L2 检查（把「覆盖率为什么低」分成能补的和改不了的）"
+        extra={
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            用平台已采集的 schema 补出解析器做不到的部分；推不出来就记账，不猜
+          </Text>
+        }
+      >
+        <L2ChecksPanel />
+      </Card>
+
       <Card size="small" title="血缘质量（回答：覆盖率为什么低）">
         <Descriptions column={1} size="small">
           <Descriptions.Item label="边来源分布">
@@ -448,5 +466,97 @@ function SqlParseCard() {
         )}
       </Space>
     </Card>
+  )
+}
+
+/**
+ * 血缘 L2 检查面板。
+ *
+ * <p>刻意把"能补的"（缺 schema → 采集即可自动消失）与"需改 SQL 的"（列在多个上游表里都有）
+ * 分成两栏：只有分开，这份清单才能被排期；混在一起就只是一堆数字。
+ */
+function L2ChecksPanel() {
+  const checks = useQuery({
+    queryKey: ['lineage-checks'],
+    queryFn: () => api.lineageChecks({ days: 30, limit: 50 }),
+  })
+
+  if (checks.isLoading) {
+    return <Spin size="small" />
+  }
+  const summary = checks.data?.summary
+  if (!summary || (checks.data?.count ?? 0) === 0) {
+    return (
+      <Text type="secondary">
+        近 30 天没有 L2 检查发现：解析器给出的结果都是 exact，或还没解析过 SQL。
+      </Text>
+    )
+  }
+
+  return (
+    <Space direction="vertical" size={10} style={{ width: '100%' }}>
+      <Space size={8} wrap>
+        {summary.byType.map((row) => (
+          <Tooltip key={row.check_type} title={summary.legend?.[row.check_type] ?? row.check_type}>
+            <Tag color={row.check_type.endsWith('_unresolved') ? 'warning' : 'blue'}>
+              {row.check_type} × {row.count}
+            </Tag>
+          </Tooltip>
+        ))}
+      </Space>
+
+      <Row gutter={12}>
+        <Col span={12}>
+          <Card size="small" type="inner" title={`能靠采集补上（${summary.actionable.length}）`}>
+            {summary.actionable.length === 0 ? (
+              <Text type="secondary">无</Text>
+            ) : (
+              <List
+                size="small"
+                dataSource={summary.actionable}
+                renderItem={(item) => (
+                  <List.Item>
+                    <Text style={{ fontSize: 12 }}>
+                      {String(item.target_urn ?? '').split('.').slice(-2).join('.')}
+                      {item.resource ? ` · ${item.resource}` : ''} × {item.count}
+                    </Text>
+                  </List.Item>
+                )}
+              />
+            )}
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              这些发现会在对应上游表被采集后自动消失
+            </Text>
+          </Card>
+        </Col>
+        <Col span={12}>
+          <Card size="small" type="inner" title={`需要改 SQL（${summary.needsSqlFix.length}）`}>
+            {summary.needsSqlFix.length === 0 ? (
+              <Text type="secondary">无</Text>
+            ) : (
+              <List
+                size="small"
+                dataSource={summary.needsSqlFix}
+                renderItem={(item) => (
+                  <List.Item>
+                    <Text style={{ fontSize: 12 }}>
+                      {String(item.target_urn ?? '').split('.').slice(-2).join('.')}
+                      {item.resource ? ` · 列 ${item.resource}` : ''} × {item.count}
+                    </Text>
+                  </List.Item>
+                )}
+              />
+            )}
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              列在多个上游表里都存在：平台**不猜**（猜错的边比缺失的边更难发现），需补列限定
+            </Text>
+          </Card>
+        </Col>
+      </Row>
+
+      <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
+        {summary.note}
+      </Paragraph>
+    </Space>
   )
 }

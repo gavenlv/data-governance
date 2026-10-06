@@ -19,13 +19,23 @@ public class LineageCapabilities implements CapabilityProvider {
                         "docs/09 §9.2", "数据集级与列级边，带来源/置信度/转换类型/控制依赖标记"),
                 CapabilityDescriptor.implemented("lineage.quality-report", "血缘质量报告", "D3 血缘",
                         "docs/09 §9.2", "回答「覆盖率为什么低」：区分「没采集」与「解析不出来」"),
-                CapabilityDescriptor.partial("lineage.sql-parse", "SQL 静态解析（sqlglot 侧车）", "D3 血缘",
-                        "docs/10 §2", "Phase 1",
+                CapabilityDescriptor.partial("lineage.sql-parse", "SQL 静态解析（sqlglot 侧车 + L2 校验层）",
+                        "D3 血缘", "docs/10 §2", "Phase 1",
                         "Python 侧车（sqlglot，20 方言）解析 SQL → Java 控制面解析 URN 后写入表级/列级血缘；"
-                                + "解析不够好的结果落 lineage_parse_sample；侧车不可用返回 502 而非空血缘",
+                                + "解析不够好的结果落 lineage_parse_sample；侧车不可用返回 502 而非空血缘；"
+                                + "**L2 校验层**用平台已采集的 schema 补出解析器做不到的部分"
+                                + "（SELECT * 展开、无表限定列消歧），推不出来的登记为血缘检查发现",
                         List.of("已实现：侧车部署（python -m dg.cli sidecar，127.0.0.1:8099）+ Java 真实调用 + 入库 + 样本登记",
-                                "未实现：L2 二次校验层（Calcite）—— SELECT * 展开、JOIN 列歧义、隐式类型转换的复核",
-                                "未实现：BI 工具内嵌 SQL 的自动提取（需各 BI 连接器，属 ingestion.connectors-more）")),
+                                "已实现：**L2 校验层** —— SELECT * 用平台 schema 展开成列级边（来源 sql_parse_l2、"
+                                        + "parseLevel=derived、置信度 0.65，**与 exact 边可区分**）；"
+                                        + "无表限定列只在唯一命中时消歧；多义则记账不猜；"
+                                        + "「缺 schema」与「解析失败」分开记账（前者能靠采集补上，后者不能）",
+                                "已实现：检查发现可查（GET /api/v1/lineage/checks）并按类型统计，"
+                                        + "区分「能补的」（缺 schema → 采集即可）与「需改 SQL 的」（列有歧义）",
+                                "**未实现：BI 工具内嵌 SQL 的自动提取** —— 需要各 BI 连接器把图表 SQL 交出来"
+                                        + "（Superset 已有连接器但只采数据集与看板，未提取图表 SQL）",
+                                "**未实现：Calcite 式的完整语义校验**（隐式类型转换、视图展开的深层复核）——"
+                                        + "当前 L2 只做「用平台 schema 补输入」这一类，不做 SQL 语义求解")),
                 CapabilityDescriptor.implemented("lineage.impact-analysis", "影响分析 / 爆炸半径", "D3 血缘",
                         "docs/09 §9.2",
                         "给定变更对象返回受影响资产清单，按 score(v)=w(v)·α^depth(v) 排序；"

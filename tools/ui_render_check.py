@@ -46,6 +46,8 @@ CASES: list[tuple[str, str, list[str]]] = [
      ["推模式的协议与控制面已实现", "已注册的 Agent", "上报记录"]),
     ("/governance?tab=engine", "治理 / 引擎审计",
      ["引擎审计", "被访问但从未被批准", "接入情况", "原始记录"]),
+    ("/lineage?tab=quality", "血缘 / 血缘质量（含 L2 检查）",
+     ["血缘 L2 检查", "能靠采集补上", "需要改 SQL"]),
     ("/admin?tab=capabilities", "管理 / 能力清单", ["能力清单", "部分实现"]),
 ]
 

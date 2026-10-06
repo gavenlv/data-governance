@@ -24,7 +24,11 @@
   场景: 23d. 界面产物与后端同源发布（构建产物确实被服务出去，而不是只存在于 dist 目录）
     当 我以匿名令牌调用 GET /
     那么 响应状态码应为 200
-    并且 首页应引用构建产物 /assets/index-*.js
+    并且 首页应引用构建产物 /static/index-*.js
+
+  场景: 23e. 资产页深链可直达（构建产物目录不得与 SPA 路由撞名）
+    当 我依次以匿名令牌访问 SPA 路由 /assets 与 /assets/urn%3Adg%3ADataset%3Ajava_e2e.postgresql.dg.public.event_log
+    那么 两个路由都应返回 SPA 外壳（含 id="root"）
 
   @chrome
   场景: 18-1. 渲染 可观测 / 异常检测 时关键文案出现

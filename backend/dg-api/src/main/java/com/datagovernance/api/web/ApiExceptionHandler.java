@@ -46,6 +46,23 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(payload);
     }
 
+    /**
+     * 数据源凭据加密密钥不可用 → 502（部署缺配置，不是调用方写错了请求）。
+     *
+     * <p>刻意让"保存数据源连接"直接失败：未配置 {@code DG_SECRET_KEY} 时若退化成明文存储，
+     * 使用者会以为凭据已加密 —— 这是安全设计里最坏的一种"方便"。
+     */
+    @ExceptionHandler(com.datagovernance.ingestion.datasource.SecretCipher.NotConfigured.class)
+    public ResponseEntity<Map<String, Object>> secretKeyNotConfigured(
+            com.datagovernance.ingestion.datasource.SecretCipher.NotConfigured e) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("error", "secret_key_not_configured");
+        payload.put("message", e.getMessage());
+        payload.put("hint", "设置 DG_SECRET_KEY 后重启控制面；密钥生成：openssl rand -base64 32。"
+                + "密钥刻意不存库：库备份泄漏不应等于凭据泄漏");
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(payload);
+    }
+
     /** SQL 解析侧车明确拒绝请求（4xx，例如方言不支持）→ 400：这是调用方的问题。 */
     @ExceptionHandler(com.datagovernance.lineage.SqlParseSidecarClient.ParseRejected.class)
     public ResponseEntity<Map<String, Object>> parseRejected(

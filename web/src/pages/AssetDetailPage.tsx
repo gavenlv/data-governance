@@ -1,7 +1,23 @@
-import { Descriptions, Alert, Card, Empty, Space, Spin, Table, Tag, Typography } from 'antd'
+import { useState } from 'react'
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Descriptions,
+  Empty,
+  Modal,
+  Popconfirm,
+  Space,
+  Spin,
+  Table,
+  Tag,
+  Typography,
+  message,
+} from 'antd'
 import { Link, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { api } from '../api/client'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api, type AssetVersionRow, type AspectVersionDetail } from '../api/client'
 
 const { Title, Text } = Typography
 
@@ -157,6 +173,8 @@ export default function AssetDetailPage() {
         )}
       </Card>
 
+      <VersionHistoryCard urn={urn} />
+
       <Card size="small" title="全部 Aspect（原始数据）">
         <pre className="dg-mono" style={{ maxHeight: 360, overflow: 'auto', margin: 0 }}>
           {JSON.stringify(aspects, null, 2)}
@@ -164,4 +182,289 @@ export default function AssetDetailPage() {
       </Card>
     </Space>
   )
+}
+
+/**
+ * 版本历史（时间线 / 查看 / 与当前对比 / 回滚）。
+ *
+ * 语义要点：版本链**只增不减** —— 回滚不是"退回旧版本"，而是把旧版本的内容
+ * 追加为一个新版本；历史版本一个都不会被改写或删除，审计链因此保持完整。
+ */
+function VersionHistoryCard({ urn }: { urn: string }) {
+  const queryClient = useQueryClient()
+  const [viewing, setViewing] = useState<AspectVersionDetail | null>(null)
+  const [diffState, setDiffState] = useState<{
+    old: AspectVersionDetail
+    current: AspectVersionDetail
+    row: AssetVersionRow
+  } | null>(null)
+
+  const versions = useQuery({
+    queryKey: ['assetVersions', urn],
+    queryFn: () => api.assetVersions(urn),
+    enabled: Boolean(urn),
+  })
+
+  const rollback = useMutation({
+    mutationFn: (row: AssetVersionRow) => api.assetRollback(urn, row.aspect_type, row.version),
+    onSuccess: (result) => {
+      message.success(
+        `已回滚：用 v${result.restoredFrom} 的内容生成新版本 v${result.version}（历史版本均保留）`,
+      )
+      queryClient.invalidateQueries({ queryKey: ['assetVersions', urn] })
+      queryClient.invalidateQueries({ queryKey: ['asset', urn] })
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
+
+  const openVersion = async (row: AssetVersionRow) => {
+    try {
+      const detail = await api.assetAspectVersion(urn, row.aspect_type, row.version)
+      setViewing(detail)
+    } catch (error) {
+      message.error((error as Error).message)
+    }
+  }
+
+  const openDiff = async (row: AssetVersionRow) => {
+    try {
+      const currentVersion = (versions.data?.versions ?? []).find(
+        (item) => item.aspect_type === row.aspect_type && item.is_current,
+      )
+      if (!currentVersion) {
+        message.warning('找不到该 aspect 的当前版本，无法对比')
+        return
+      }
+      const [oldDetail, currentDetail] = await Promise.all([
+        api.assetAspectVersion(urn, row.aspect_type, row.version),
+        api.assetAspectVersion(urn, row.aspect_type, currentVersion.version),
+      ])
+      setViewing(null)
+      setDiffState({ old: oldDetail, current: currentDetail, row })
+    } catch (error) {
+      message.error((error as Error).message)
+    }
+  }
+
+  const changes = diffState ? diffObjects(diffState.old.data ?? {}, diffState.current.data ?? {}) : []
+
+  return (
+    <Card
+      size="small"
+      title="版本历史"
+      extra={
+        versions.data ? <Text type="secondary">共 {versions.data.count} 个版本</Text> : undefined
+      }
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="版本链只增不减"
+        description={
+          versions.data?.note ??
+          '回滚 = 用旧版本内容生成新版本；历史版本不会被改写或删除，可随时查看与对比。'
+        }
+      />
+      {versions.isError && (
+        <Alert type="error" showIcon message="读取版本历史失败" description={(versions.error as Error).message} />
+      )}
+      <Table<AssetVersionRow>
+        size="small"
+        rowKey={(row) => `${row.aspect_type}#${row.version}`}
+        loading={versions.isLoading}
+        dataSource={versions.data?.versions ?? []}
+        pagination={{ pageSize: 10, showSizeChanger: false }}
+        locale={{ emptyText: <Empty description="尚无版本记录" /> }}
+        columns={[
+          {
+            title: '版本',
+            dataIndex: 'version',
+            width: 130,
+            render: (value: number, row) => (
+              <Space size={4}>
+                <span className="dg-mono">v{value}</span>
+                {row.is_current && <Badge status="processing" text="当前" />}
+              </Space>
+            ),
+          },
+          {
+            title: 'Aspect',
+            dataIndex: 'aspect_type',
+            width: 150,
+            render: (value: string) => <Tag color="blue">{value}</Tag>,
+          },
+          {
+            title: '来源',
+            dataIndex: 'updated_by',
+            width: 150,
+            render: (value: string | null) =>
+              value ? <span className="dg-mono">{value}</span> : <Text type="secondary">—</Text>,
+          },
+          {
+            title: '采集运行',
+            dataIndex: 'run_id',
+            render: (value: string | null) =>
+              value ? <span className="dg-mono">{value}</span> : <Text type="secondary">—</Text>,
+          },
+          {
+            title: '时间',
+            dataIndex: 'updated_at',
+            width: 180,
+            render: (value: string) => <span className="dg-mono">{value.slice(0, 19)}</span>,
+          },
+          {
+            title: '操作',
+            width: 210,
+            render: (_, row) => (
+              <Space size={4}>
+                <Button size="small" type="link" onClick={() => openVersion(row)}>
+                  查看
+                </Button>
+                {!row.is_current && (
+                  <Button size="small" type="link" onClick={() => openDiff(row)}>
+                    与当前对比
+                  </Button>
+                )}
+                {!row.is_current && (
+                  <Popconfirm
+                    title={`回滚到 v${row.version}？`}
+                    description="会用该版本的内容生成一个新版本，历史版本全部保留。"
+                    okText="确认回滚"
+                    cancelText="取消"
+                    onConfirm={() => rollback.mutate(row)}
+                  >
+                    <Button size="small" type="link" danger>
+                      回滚
+                    </Button>
+                  </Popconfirm>
+                )}
+              </Space>
+            ),
+          },
+        ]}
+      />
+
+      <Modal
+        open={Boolean(viewing)}
+        title={viewing ? `${viewing.aspectType} · v${viewing.version}` : ''}
+        footer={null}
+        width={720}
+        onCancel={() => setViewing(null)}
+      >
+        <pre className="dg-mono" style={{ maxHeight: 480, overflow: 'auto', margin: 0 }}>
+          {JSON.stringify(viewing?.data ?? {}, null, 2)}
+        </pre>
+      </Modal>
+
+      <Modal
+        open={Boolean(diffState)}
+        title={
+          diffState
+            ? `${diffState.row.aspect_type}：v${diffState.row.version} → v${diffState.current.version}（当前）`
+            : ''
+        }
+        footer={null}
+        width={900}
+        onCancel={() => {
+          setDiffState(null)
+        }}
+      >
+        {changes.length === 0 ? (
+          <Empty description="两个版本内容一致（无字段级差异）" />
+        ) : (
+          <Table<DiffRow>
+            size="small"
+            rowKey="path"
+            dataSource={changes}
+            pagination={{ pageSize: 20, showSizeChanger: false }}
+            columns={[
+              {
+                title: '路径',
+                dataIndex: 'path',
+                width: 260,
+                render: (value: string) => <span className="dg-mono">{value}</span>,
+              },
+              {
+                title: '类型',
+                dataIndex: 'kind',
+                width: 90,
+                render: (value: DiffRow['kind']) => (
+                  <Tag color={value === 'added' ? 'green' : value === 'removed' ? 'red' : 'orange'}>
+                    {value === 'added' ? '新增' : value === 'removed' ? '删除' : '变更'}
+                  </Tag>
+                ),
+              },
+              {
+                title: `旧值（v${diffState?.row.version}）`,
+                dataIndex: 'before',
+                render: (value: string | undefined) =>
+                  value === undefined ? <Text type="secondary">—</Text> : <span className="dg-mono">{value}</span>,
+              },
+              {
+                title: '新值（当前）',
+                dataIndex: 'after',
+                render: (value: string | undefined) =>
+                  value === undefined ? <Text type="secondary">—</Text> : <span className="dg-mono">{value}</span>,
+              },
+            ]}
+          />
+        )}
+      </Modal>
+    </Card>
+  )
+}
+
+interface DiffRow {
+  path: string
+  kind: 'added' | 'removed' | 'changed'
+  before?: string
+  after?: string
+}
+
+/** 把嵌套对象/数组压成 key path → 标量文本，这样 diff 能定位到"哪一列变了"。 */
+function flatten(value: unknown, prefix = '', out: Record<string, string> = {}): Record<string, string> {
+  if (value === null || typeof value !== 'object') {
+    out[prefix] = JSON.stringify(value)
+    return out
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      out[prefix] = '[]'
+      return out
+    }
+    value.forEach((item, index) => flatten(item, prefix ? `${prefix}[${index}]` : `[${index}]`, out))
+    return out
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+  if (entries.length === 0) {
+    out[prefix] = '{}'
+    return out
+  }
+  for (const [key, item] of entries) {
+    flatten(item, prefix ? `${prefix}.${key}` : key, out)
+  }
+  return out
+}
+
+function diffObjects(before: Record<string, unknown>, after: Record<string, unknown>): DiffRow[] {
+  const left = flatten(before)
+  const right = flatten(after)
+  const paths = Array.from(new Set([...Object.keys(left), ...Object.keys(right)])).sort()
+  const rows: DiffRow[] = []
+  for (const path of paths) {
+    const oldValue = left[path]
+    const newValue = right[path]
+    if (oldValue === newValue) {
+      continue
+    }
+    if (oldValue === undefined) {
+      rows.push({ path, kind: 'added', after: newValue })
+    } else if (newValue === undefined) {
+      rows.push({ path, kind: 'removed', before: oldValue })
+    } else {
+      rows.push({ path, kind: 'changed', before: oldValue, after: newValue })
+    }
+  }
+  return rows
 }

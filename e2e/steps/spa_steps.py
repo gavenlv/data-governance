@@ -13,7 +13,9 @@ import pytest
 from pytest_bdd import parsers, then, when
 
 _ROOT_MARK = 'id="root"'
-_BUNDLE_RE = re.compile(r"/assets/(index-[A-Za-z0-9_-]+\.js)")
+# 构建产物目录是 static/（web/vite.config.ts 的 assetsDir）：不能用 assets/，
+# 否则会和 SPA 的 /assets 资产页路由撞名，导致该页面深链 404。
+_BUNDLE_RE = re.compile(r"/static/(index-[A-Za-z0-9_-]+\.js)")
 
 # 无头渲染：候选浏览器与逐标签页关键文案（与 tools/ui_render_check.py 的 CASES 保持一致）。
 _CHROME_CANDIDATES = [
@@ -78,11 +80,11 @@ def _routes_shell(world) -> None:
     world.last_status = seen[-1][1] if seen else None
 
 
-@then("首页应引用构建产物 /assets/index-*.js")
+@then("首页应引用构建产物 /static/index-*.js")
 def _bundle_referenced(world) -> None:
     body = world.last_body if isinstance(world.last_body, str) else ""
     match = _BUNDLE_RE.search(body)
-    assert match is not None, "首页未引用 /assets/index-*.js（构建产物没有被服务出去？）"
+    assert match is not None, "首页未引用 /static/index-*.js（构建产物没有被服务出去？）"
     world.remember("bundle", match.group(1))
 
 

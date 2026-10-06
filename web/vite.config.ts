@@ -15,7 +15,10 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    // 构建产物由 dg-api 作为静态资源托管（生产形态）
+    // 构建产物由 dg-api 作为静态资源托管（生产形态）。
+    // 刻意不用 Vite 默认的 assets/ 目录：前端 SPA 路由里有一个 /assets（资产页），
+    // 两者撞名会让「直接打开或刷新 /assets」被静态资源处理器截走并返回 404。
+    assetsDir: 'static',
     sourcemap: true,
   },
 })

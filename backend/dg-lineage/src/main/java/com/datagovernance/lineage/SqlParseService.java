@@ -4,8 +4,10 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import com.datagovernance.core.MetadataService;
 import com.datagovernance.core.resolve.TableResolver;
@@ -44,6 +46,7 @@ public class SqlParseService {
     private final TableResolver resolver;
     private final MetadataService metadata;
     private final JdbcTemplate jdbc;
+    private final SqlParseL2Validator l2Validator;
 
     public SqlParseService(SqlParseSidecarClient sidecar, TableResolver resolver,
                            MetadataService metadata, JdbcTemplate jdbc) {
@@ -51,6 +54,69 @@ public class SqlParseService {
         this.resolver = resolver;
         this.metadata = metadata;
         this.jdbc = jdbc;
+        // L2 的输入是"平台已采集的 schema"，因此直接查 aspect 表（datasetSchema.fields）
+        this.l2Validator = new SqlParseL2Validator(this::knownColumns);
+    }
+
+    /**
+     * 平台已知的列名（来自已采集的 {@code datasetSchema}）。
+     *
+     * <p>查不到就返回空集合 —— L2 会据此记一条"缺 schema"的发现，而不是猜。
+     * 每次解析会话内缓存，避免同一条 SQL 里反复查同一个上游。
+     */
+    private final Map<String, Set<String>> columnCache = new LinkedHashMap<>();
+
+    private Set<String> knownColumns(String datasetUrn) {
+        if (datasetUrn == null) {
+            return Set.of();
+        }
+        return columnCache.computeIfAbsent(datasetUrn, urn -> {
+            try {
+                String schemaJson = jdbc.query("""
+                        SELECT data::text FROM aspect WHERE urn = ? AND aspect_type = 'datasetSchema'
+                        """, rs -> rs.next() ? rs.getString(1) : null, urn);
+                if (schemaJson == null) {
+                    return Set.of();
+                }
+                Map<String, Object> parsed = new com.fasterxml.jackson.databind.ObjectMapper().readValue(schemaJson,
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { });
+                if (!(parsed.get("fields") instanceof List<?> fields)) {
+                    return Set.of();
+                }
+                Set<String> columns = new LinkedHashSet<>();
+                for (Object item : fields) {
+                    if (item instanceof Map<?, ?> field && field.get("name") != null) {
+                        columns.add(String.valueOf(field.get("name")).toLowerCase(java.util.Locale.ROOT));
+                    }
+                }
+                return columns;
+            } catch (Exception e) {
+                log.debug("读取 datasetSchema 失败（L2 将记为缺 schema）：{} → {}", urn, e.getMessage());
+                return Set.of();
+            }
+        });
+    }
+
+    /** L2 发现的登记（失败不影响血缘写入：发现是运营信息，血缘是产出）。 */
+    private int recordFindings(List<SqlParseL2Validator.Finding> findings, String targetUrn,
+                               String statementHash, String dialect, String actor) {
+        int recorded = 0;
+        for (SqlParseL2Validator.Finding finding : findings) {
+            try {
+                jdbc.update("""
+                        INSERT INTO lineage_check_finding
+                            (check_type, severity, statement_hash, target_urn, resource, message,
+                             evidence, source, actor)
+                        VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?)
+                        """, finding.checkType(), finding.severity(), statementHash, targetUrn,
+                        finding.resource(), finding.message(), toJson(finding.evidence()),
+                        SqlParseL2Validator.EDGE_SOURCE, actor);
+                recorded++;
+            } catch (RuntimeException e) {
+                log.warn("登记 L2 发现失败（不影响血缘）：{}", e.getMessage());
+            }
+        }
+        return recorded;
     }
 
     @Transactional
@@ -71,8 +137,12 @@ public class SqlParseService {
         int failed = 0;
         int downgraded = 0;
         int samplesRecorded = 0;
+        int l2EdgesTotal = 0;
+        int l2FindingsTotal = 0;
+        int findingsRecorded = 0;
         List<String> unresolved = new ArrayList<>();
         List<Map<String, Object>> statementSummaries = new ArrayList<>();
+        columnCache.clear();
 
         for (SqlParseSidecarClient.ParseStatement statement : parsed.results()) {
             String parseLevel = statement.parseLevel() == null ? "derived" : statement.parseLevel();
@@ -154,6 +224,38 @@ public class SqlParseService {
             summary.put("columnEdges", edges.size());
             summary.put("error", statement.error());
             summary.put("warnings", statement.warnings());
+
+            // ---- L2 校验：用平台已有的 schema 把"解析不出来"变成"推得出来" ----
+            // 只在解析器没能给出 exact 结果时才需要（exact 的语句没有信息缺口）
+            if (!"exact".equals(parseLevel)) {
+                SqlParseL2Validator.Result l2 = l2Validator.validate(targetUrn,
+                        List.copyOf(resolvedSources.values()),
+                        statement.warnings() == null ? List.of() : statement.warnings(),
+                        parseLevel, "failed".equals(parseLevel));
+                int l2Edges = 0;
+                for (SqlParseL2Validator.ResolvedEdge resolved : l2.edges()) {
+                    l2Edges++;
+                    if (dryRun || targetUrn == null) {
+                        continue;
+                    }
+                    String fromColumnUrn = TableResolver.columnUrn(resolved.fromUrn(), resolved.fromColumn());
+                    String toColumnUrn = TableResolver.columnUrn(resolved.toUrn(), resolved.toColumn());
+                    metadata.ensureEntity(fromColumnUrn, "Column", null, null);
+                    metadata.ensureEntity(toColumnUrn, "Column", null, null);
+                    metadata.upsertEdge(fromColumnUrn, toColumnUrn, "derivesFrom",
+                            SqlParseL2Validator.EDGE_SOURCE, resolved.confidence(),
+                            resolved.transform(), resolved.expression(), null, "VALUE",
+                            resolved.parseLevel(), null, null);
+                }
+                if (!dryRun) {
+                    findingsRecorded += recordFindings(l2.findings(), targetUrn,
+                            sha256(statement.sql() == null ? "" : statement.sql()), effectiveDialect, actor);
+                }
+                l2EdgesTotal += l2Edges;
+                l2FindingsTotal += l2.findings().size();
+                summary.put("l2Edges", l2Edges);
+                summary.put("l2Findings", l2.findings().stream().map(SqlParseL2Validator.Finding::checkType).toList());
+            }
             statementSummaries.add(summary);
         }
 
@@ -168,6 +270,14 @@ public class SqlParseService {
         payload.put("downgraded", downgraded);
         payload.put("tableEdges", tableEdges);
         payload.put("columnEdges", columnEdges);
+        payload.put("l2Edges", l2EdgesTotal);
+        payload.put("l2Findings", l2FindingsTotal);
+        payload.put("l2FindingsRecorded", findingsRecorded);
+        payload.put("l2Note", (l2EdgesTotal + l2FindingsTotal) == 0 ? null
+                : "L2 校验层：用**平台已采集的 schema** 补出解析器做不到的列级血缘（SELECT * 展开、"
+                        + "无表限定列消歧）。补出的边来源标记为 " + SqlParseL2Validator.EDGE_SOURCE
+                        + "、parseLevel=derived、置信度 0.6–0.65 —— 它不是 SQL 文本直接给出的，"
+                        + "使用者有权区分。推不出来的部分登记在 /api/v1/lineage/checks，不猜。");
         payload.put("samplesRecorded", samplesRecorded);
         payload.put("unresolvedTables", unresolved.stream().distinct().toList());
         payload.put("unresolvedNote", unresolved.isEmpty() ? null
@@ -177,8 +287,8 @@ public class SqlParseService {
         if (dryRun) {
             payload.put("note", "dryRun=true：只解析不写库（用于预览与调试方言）");
         }
-        log.info("SQL 解析入库：语句 {}，表级边 {}，列级边 {}，未解析表 {}，样本 {}",
-                parsed.statements(), tableEdges, columnEdges,
+        log.info("SQL 解析入库：语句 {}，表级边 {}，列级边 {}，L2 补边 {}，L2 发现 {}，未解析表 {}，样本 {}",
+                parsed.statements(), tableEdges, columnEdges, l2EdgesTotal, findingsRecorded,
                 payload.get("unresolvedTables"), samplesRecorded);
         return payload;
     }

@@ -157,6 +157,16 @@ def _assert_contains(world, needle: str) -> None:
     assert needle in haystack, f"响应中未找到「{needle}」：{_brief(world.last_body)}"
 
 
+@then(parsers.parse("响应体中字段 {path} 不应包含文本 {needle}"))
+def _assert_field_excludes(world, path: str, needle: str) -> None:
+    """用于「凭据永不回显」这类断言：字段里不该出现口令/账号片段。"""
+    actual = _resolve(world.last_body, path)
+    assert actual is not None, f"字段 {path} 缺失：{_brief(world.last_body)}"
+    assert needle not in _as_text(actual), (
+        f"字段 {path} 不应包含「{needle}」，实际 {_as_text(actual)}"
+    )
+
+
 @then(parsers.parse("响应体中字段 {path} 不应存在"))
 def _assert_field_absent(world, path: str) -> None:
     assert not _has_path(world.last_body, path), f"字段 {path} 不应存在"

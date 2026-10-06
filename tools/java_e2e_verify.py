@@ -1849,6 +1849,93 @@ models:
           or (missing.get("status") == "FAILED" and "dbt compile" in errors),
           (missing_message or errors)[:84])
 
+    # ------------------------------------- 39) 血缘 L2 校验层（用平台 schema 补输入）
+    # 解析器缺的不是能力而是**输入**：SELECT * 缺 schema、无表限定的列有歧义。
+    # L2 的职责是用平台已采集的 schema 把"解析不出来"变成"推得出来"，推不出来就记账。
+    l2_left = f"urn:dg:Dataset:{NAMESPACE}.postgresql.dg.public.l2_left"
+    l2_right = f"urn:dg:Dataset:{NAMESPACE}.postgresql.dg.public.l2_right"
+    l2_no_schema = f"urn:dg:Dataset:{NAMESPACE}.postgresql.dg.public.l2_no_schema"
+    l2_target = f"urn:dg:Dataset:{NAMESPACE}.postgresql.dg.dw.l2_target"
+
+    def write_dataset(urn: str, fields: list[dict] | None, entity_type: str = "Dataset") -> int:
+        aspect = "datasetSchema" if fields is not None else "descriptions"
+        data = {"fields": fields, "primaryKey": [], "schemaHash": "e2e"} if fields is not None \
+            else {"text": "L2 校验夹具（故意不采集 schema）", "language": "zh", "source": "MANUAL"}
+        status, _ = call("POST",
+                         f"/api/v1/assets/{urllib.parse.quote(urn, safe='')}/aspects/{aspect}"
+                         f"?entityType={entity_type}",
+                         {"data": data, "source": "MANUAL"})
+        return status
+
+    write_dataset(l2_left, [{"name": "id", "type": "bigint", "nullable": False, "ordinal": 1},
+                            {"name": "name", "type": "text", "nullable": True, "ordinal": 2}])
+    write_dataset(l2_right, [{"name": "id", "type": "bigint", "nullable": False, "ordinal": 1},
+                             {"name": "amount", "type": "numeric", "nullable": True, "ordinal": 2}])
+    write_dataset(l2_no_schema, None)              # 只有描述、没有 schema
+    write_dataset(l2_target, [{"name": "id", "type": "bigint", "nullable": True, "ordinal": 1}])
+
+    status, star = call("POST", "/api/v1/lineage/parse", {
+        "sql": "CREATE TABLE dg.dw.l2_target AS SELECT * FROM dg.public.l2_left",
+        "dialect": "postgres", "namespace": NAMESPACE})
+    check("39a. SELECT * 用平台 schema 展开成列级边（解析器做不到，但平台知道 schema）",
+          status == 200 and star.get("l2Edges", 0) >= 2
+          and star.get("columnEdges", 0) == 0,
+          f"解析器给出列级边 {star.get('columnEdges')} 条；L2 补出 {star.get('l2Edges')} 条"
+          f"（SELECT * 的语义是同名透传）")
+
+    # L2 补的是**列级**边，因此必须从列节点出发查 —— 从数据集出发看不到列到列的边
+    l2_target_column = f"urn:dg:Column:{NAMESPACE}.postgresql.dg.dw.l2_target.id"
+    status, sub_l2 = call("GET",
+                          f"/api/v1/lineage/subgraph?urn={urllib.parse.quote(l2_target_column, safe='')}"
+                          "&direction=upstream&depth=2&includeColumns=true")
+    l2_edges = [edge for edge in (sub_l2.get("edges") or []) if edge.get("source") == "sql_parse_l2"]
+    check("39b. 补出来的边**来源可区分**（sql_parse_l2）、置信度低于 exact",
+          status == 200 and bool(l2_edges)
+          and all(float(edge.get("confidence", 0)) < 0.8 for edge in l2_edges),
+          f"{len(l2_edges)} 条 L2 边，置信度 {[edge.get('confidence') for edge in l2_edges][:3]}"
+          "（使用者有权知道这不是 SQL 直接给出的）")
+
+    status, ambiguous = call("POST", "/api/v1/lineage/parse", {
+        "sql": "INSERT INTO dg.dw.l2_target SELECT id FROM dg.public.l2_left a "
+               "JOIN dg.public.l2_right b ON a.id = b.id",
+        "dialect": "postgres", "namespace": NAMESPACE})
+    types = set(ambiguous.get("details", [{}])[0].get("l2Findings", [])) if isinstance(ambiguous, dict) else set()
+    check("39c. 列在两个上游表里都存在时**不猜**（记 ambiguous_column_unresolved，不建边）",
+          status == 200 and "ambiguous_column_unresolved" in types
+          and ambiguous.get("l2Edges", -1) == 0,
+          f"L2 发现 {sorted(types)}；补边 {ambiguous.get('l2Edges')} 条")
+
+    status, resolved = call("POST", "/api/v1/lineage/parse", {
+        "sql": "INSERT INTO dg.dw.l2_target SELECT amount FROM dg.public.l2_left a "
+               "JOIN dg.public.l2_right b ON a.id = b.id",
+        "dialect": "postgres", "namespace": NAMESPACE})
+    resolved_types = set(resolved.get("details", [{}])[0].get("l2Findings", [])) if isinstance(resolved, dict) else set()
+    check("39d. 列只存在于一个上游表时就消歧（不确定的反面是确定，不必一起放弃）",
+          status == 200 and "ambiguous_column_resolved" in resolved_types
+          and resolved.get("l2Edges", 0) >= 1,
+          f"L2 发现 {sorted(resolved_types)}；补边 {resolved.get('l2Edges')} 条")
+
+    status, missing_schema = call("POST", "/api/v1/lineage/parse", {
+        "sql": "CREATE TABLE dg.dw.l2_target AS SELECT * FROM dg.public.l2_no_schema",
+        "dialect": "postgres", "namespace": NAMESPACE})
+    missing_types = set(missing_schema.get("details", [{}])[0].get("l2Findings", [])) \
+        if isinstance(missing_schema, dict) else set()
+    check("39e. 上游 schema 未采集时明确记账并给出**怎么办**（而不是静默无产出）",
+          status == 200 and "select_star_unresolved" in missing_types
+          and missing_schema.get("l2Edges", -1) == 0,
+          f"L2 发现 {sorted(missing_types)}")
+
+    status, checks = call("GET", "/api/v1/lineage/checks?days=30&limit=100")
+    summary = checks.get("summary", {}) if isinstance(checks, dict) else {}
+    by_type = {row.get("check_type") for row in summary.get("byType", [])}
+    actionable = summary.get("actionable") or []
+    check("39f. 检查发现可查、可按类型统计，并区分「能补的」与「需改 SQL 的」",
+          status == 200 and checks.get("count", 0) > 0
+          and {"select_star_expanded", "select_star_unresolved", "ambiguous_column_unresolved"} <= by_type
+          and bool(actionable)
+          and "不猜" in str(summary.get("note")),
+          f"{checks.get('count')} 条发现，类型 {sorted(by_type)}；可操作（缺 schema）{len(actionable)} 条")
+
     # ------------------------------------------------------------ 23) 界面
     status, html = call("GET", "/", token=None)
     is_html = isinstance(html, str) and 'id="root"' in html

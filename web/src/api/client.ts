@@ -109,6 +109,21 @@ export const api = {
       `/api/v1/assets/${encodeURIComponent(urn)}/aspects/${aspectType}/history`,
     ),
 
+  // ------------------------------------------------------------ 资产版本管理
+  // 版本链只增不减：当前版本在 aspect，历史版本在 aspect_history，回滚 = 追加新版本
+
+  assetVersions: (urn: string) =>
+    request<AssetVersionList>(`/api/v1/assets/${encodeURIComponent(urn)}/versions`),
+  assetAspectVersion: (urn: string, aspectType: string, version: number) =>
+    request<AspectVersionDetail>(
+      `/api/v1/assets/${encodeURIComponent(urn)}/aspects/${encodeURIComponent(aspectType)}/history/${version}`,
+    ),
+  assetRollback: (urn: string, aspectType: string, version: number) =>
+    request<RollbackResult>(
+      `/api/v1/assets/${encodeURIComponent(urn)}/aspects/${encodeURIComponent(aspectType)}/rollback?version=${version}`,
+      { method: 'POST' },
+    ),
+
   search: (params: { q: string; type?: string; platform?: string; limit?: number }) => {
     const query = new URLSearchParams()
     query.set('q', params.q)
@@ -162,6 +177,14 @@ export const api = {
       body: JSON.stringify({ reason }),
     }),
   lineageQuality: () => request<Record<string, unknown>>('/api/v1/lineage/quality'),
+  /** 血缘 L2 检查发现：把「覆盖率为什么低」分成「能补的」与「需改 SQL 的」。 */
+  lineageChecks: (params: { checkType?: string; days?: number; limit?: number } = {}) => {
+    const query = new URLSearchParams()
+    if (params.checkType) query.set('checkType', params.checkType)
+    query.set('days', String(params.days ?? 30))
+    query.set('limit', String(params.limit ?? 100))
+    return request<LineageCheckResponse>(`/api/v1/lineage/checks?${query}`)
+  },
   lineageSidecar: () => request<Record<string, unknown>>('/api/v1/lineage/parse/sidecar'),
   lineageParse: (body: {
     sql: string
@@ -205,6 +228,31 @@ export const api = {
       method: 'POST',
     }),
   alerts: () => request<unknown>('/api/v1/collect/alerts'),
+
+  // -------------------------------------------------------------- 数据源管理
+  // 连接录一次、反复复用：扫描 / 测试都只传 id，不再重敲 DSN 与口令。
+  // 凭据由控制面用 AES-256-GCM 加密存储，接口**永不回显**（只有 hasCredentials 布尔）。
+
+  dataSources: () => request<DataSourceList>('/api/v1/datasources'),
+  dataSource: (id: string) => request<DataSourceRow>(`/api/v1/datasources/${encodeURIComponent(id)}`),
+  dataSourceCreate: (body: DataSourceSaveRequest) =>
+    request<DataSourceRow>('/api/v1/datasources', { method: 'POST', body: JSON.stringify(body) }),
+  /** 留空的字段表示"保持原值"——这正是"不必重输完整连接细节"的落点。 */
+  dataSourceUpdate: (id: string, body: DataSourceSaveRequest) =>
+    request<DataSourceRow>(`/api/v1/datasources/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  dataSourceDelete: (id: string) =>
+    request<{ id: string; deleted: boolean; note: string }>(
+      `/api/v1/datasources/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
+  /** 返回 200 + ok:false 表示"测试成功执行、结论是不通"，与接口本身失败（5xx）区分开。 */
+  dataSourceTest: (id: string) =>
+    request<DataSourceTestResult>(`/api/v1/datasources/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  dataSourceScan: (id: string) =>
+    request<DataSourceScanResult>(`/api/v1/datasources/${encodeURIComponent(id)}/scan`, { method: 'POST' }),
 
   // ---------------------------------------------------------------- 质量（Batch 2）
   qualityOverview: () => request<QualityOverview>('/api/v1/quality/overview'),
@@ -555,6 +603,45 @@ export interface AssetDetail {
   aspects: Record<string, Record<string, unknown>>
 }
 
+/** 版本时间线的一行：is_current 标识当前生效版本（历史版本一律 false）。 */
+export interface AssetVersionRow {
+  aspect_type: string
+  version: number
+  updated_by: string | null
+  updated_at: string
+  run_id: string | null
+  is_current: boolean
+}
+
+export interface AssetVersionList {
+  count: number
+  versions: AssetVersionRow[]
+  note: string
+}
+
+export interface AspectVersionDetail {
+  urn: string
+  aspectType: string
+  version: number
+  data: Record<string, unknown>
+  fieldSources?: Record<string, unknown>
+  updatedBy?: string | null
+  updatedAt?: string | null
+  isCurrent?: boolean
+  [key: string]: unknown
+}
+
+/** 回滚结果：restoredFrom → 新版本 version，历史版本一个都没删。 */
+export interface RollbackResult {
+  urn: string
+  aspectType: string
+  restoredFrom: number
+  previousVersion: number
+  version: number
+  eventSeq: number
+  note: string
+}
+
 export interface LineageGraph {
   urn: string
   direction: string
@@ -659,6 +746,79 @@ export interface ConnectorInfo {
   verifiedAgainstRealSystem: boolean
   note: string
   dsnExample: string
+}
+
+// ------------------------------------------------------------------ 数据源管理
+
+/** 数据源行：**不含凭据**，只有 hasCredentials 布尔；endpoint 已脱敏（去掉 user:password@）。 */
+export interface DataSourceRow {
+  id: string
+  name: string
+  connector: string
+  namespace: string | null
+  endpoint: string | null
+  databases: string[]
+  schemas: string[]
+  tables: string[]
+  sampleSize: number | null
+  hasCredentials: boolean
+  createdBy: string | null
+  createdAt: string
+  updatedAt: string
+  lastScanAt?: string | null
+  lastScanRunId?: string | null
+  lastScanStatus?: string | null
+  note?: string[]
+}
+
+/** 凭据加密状态：configured=false 时保存连接会被拒绝（502），绝不降级为明文。 */
+export interface DataSourceCipherStatus {
+  configured: boolean
+  algorithm: string
+  keySource: string
+  reason?: string | null
+  hint?: string | null
+}
+
+export interface DataSourceList {
+  count: number
+  dataSources: DataSourceRow[]
+  cipher: DataSourceCipherStatus
+  note: string
+}
+
+/** 创建/编辑请求：更新时留空字段表示保持原值。 */
+export interface DataSourceSaveRequest {
+  name: string
+  connector: string
+  namespace?: string | null
+  dsn?: string | null
+  jdbcUrl?: string | null
+  username?: string | null
+  password?: string | null
+  databases?: string[] | null
+  schemas?: string[] | null
+  tables?: string[] | null
+  sampleSize?: number | null
+}
+
+export interface DataSourceTestResult {
+  id: string
+  name: string
+  connector: string
+  endpoint: string | null
+  /** false = 测试成功执行但连不通（不是接口失败）。 */
+  ok: boolean
+  platform?: string | null
+  sampleDataset?: string | null
+  note?: string
+  durationMs?: number
+}
+
+export type DataSourceScanResult = CollectRun & {
+  dataSourceId?: string
+  dataSourceName?: string
+  hint?: string
 }
 
 export interface CollectHealth {
@@ -1168,6 +1328,37 @@ export interface UnapprovedAccessRow {
   queries: number
   last_access_at: string
   first_access_at: string
+}
+
+// ------------------------------------------------------------------ 血缘检查
+
+export interface LineageCheckFinding {
+  id: number
+  check_type: string
+  severity: 'INFO' | 'WARN' | 'BLOCK'
+  statement_hash: string | null
+  target_urn: string | null
+  resource: string | null
+  message: string
+  evidence: Record<string, unknown>
+  source: string
+  actor: string | null
+  occurred_at: string
+}
+
+export interface LineageCheckResponse {
+  count: number
+  findings: LineageCheckFinding[]
+  summary: {
+    windowDays: number
+    byType: { check_type: string; severity: string; count: number; affected_assets: number; last_seen: string }[]
+    legend: Record<string, string>
+    /** 能靠采集补上的（缺 schema / 目标未采集） */
+    actionable: { target_urn: string | null; resource: string | null; count: number }[]
+    /** 需要改 SQL 的（列有歧义） */
+    needsSqlFix: { target_urn: string | null; resource: string | null; count: number }[]
+    note: string
+  }
 }
 
 // ---------------------------------------------------------------------- 策略

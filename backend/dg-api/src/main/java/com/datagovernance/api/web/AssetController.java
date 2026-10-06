@@ -154,6 +154,62 @@ public class AssetController {
         return payload;
     }
 
+    /**
+     * 资产级版本时间线（该资产全部 aspect 的当前版本 + 历史版本）。
+     *
+     * <p>与 {@code /search} 同一套可见性判定：版本内容同样可能带分级信息，
+     * 不能出现"搜不到但知道 URN 就能看历史版本"这类越权。
+     */
+    @GetMapping("/assets/{urn}/versions")
+    public Map<String, Object> versions(@PathVariable String urn) {
+        UrnUtils.parse(urn);
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "asset:read");
+        AccessPolicy.ensureVisible(subject, classificationOf(urn));
+        Map<String, Object> payload =
+                ApiExceptionHandler.list("versions", metadata.versionTimeline(urn));
+        payload.put("note", "含当前版本与全部历史版本；is_current=true 为当前生效版本。"
+                + "版本号只增不减：回滚同样产生新版本，历史不可篡改");
+        return payload;
+    }
+
+    /** 读取指定版本的内容（当前版本与历史版本都可）。 */
+    @GetMapping("/assets/{urn}/aspects/{aspectType}/history/{version}")
+    public Map<String, Object> aspectVersion(@PathVariable String urn,
+                                             @PathVariable String aspectType,
+                                             @PathVariable long version) {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "asset:read");
+        AccessPolicy.ensureVisible(subject, classificationOf(urn));
+        return metadata.aspectVersion(urn, aspectType, version)
+                .map(data -> {
+                    Map<String, Object> payload = new LinkedHashMap<>();
+                    payload.put("urn", urn);
+                    payload.put("aspectType", aspectType);
+                    payload.put("version", version);
+                    payload.put("data", data);
+                    return payload;
+                })
+                .orElseThrow(() -> new com.datagovernance.core.MetadataException.NotFound(
+                        "版本不存在：" + urn + "#" + aspectType + "@" + version));
+    }
+
+    /**
+     * 回滚到指定版本。
+     *
+     * <p>回滚是<b>追加新版本</b>（内容等于目标版本），不是删除后续版本 ——
+     * 因此这个写操作不会破坏审计轨迹，"谁在什么时候回滚了什么"仍可从版本链读出。
+     */
+    @PostMapping("/assets/{urn}/aspects/{aspectType}/rollback")
+    public Map<String, Object> rollbackAspect(@PathVariable String urn,
+                                              @PathVariable String aspectType,
+                                              @RequestParam long version) {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "asset:write");
+        AccessPolicy.ensureVisible(subject, classificationOf(urn));
+        return metadata.rollbackAspect(urn, aspectType, version, subject.id());
+    }
+
     /** aspect 版本历史（时间旅行与回滚的依据）。 */
     @GetMapping("/assets/{urn}/aspects/{aspectType}/history")
     public Map<String, Object> aspectHistory(@PathVariable String urn, @PathVariable String aspectType) {

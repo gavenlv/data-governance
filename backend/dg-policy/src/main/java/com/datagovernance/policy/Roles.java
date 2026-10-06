@@ -15,8 +15,13 @@ import java.util.TreeSet;
  * </pre>
  *
  * <p>本类的映射表与 Python 参考实现（{@code src/dg/auth/principal.py}）保持一致，
- * 仅新增两个本批新增接口所需的权限点（{@code schedule:write} / {@code index:rebuild}），
+ * 仅新增本批新增接口所需的权限点（{@code schedule:write} / {@code index:rebuild}），
  * 差异在此显式记录而不是悄悄扩大授权面。
+ *
+ * <p>{@code datasource:*} 是数据源管理新增的权限点，刻意**独立于 {@code asset:read}**：
+ * 连接信息（主机 / 端口 / 账号）属于采集运维面，不是目录内容 ——
+ * 因此 READER 完全看不到，STEWARD 只读（能审计连接清单，但不能改凭据），
+ * 只有具备采集权限的 EDITOR（与 ADMIN）能增删改与触发扫描。
  */
 public final class Roles {
 
@@ -39,10 +44,11 @@ public final class Roles {
     private static final java.util.Map<String, Set<String>> ROLE_PERMISSIONS = java.util.Map.of(
             ADMIN, Set.of("*"),
             EDITOR, Set.of("asset:read", "asset:write", "lineage:read", "lineage:write",
-                    "model:read", "collect:run", "index:consume"),
+                    "model:read", "collect:run", "index:consume",
+                    "datasource:read", "datasource:write"),
             STEWARD, Set.of("asset:read", "asset:write", "lineage:read", "lineage:write",
                     "model:read", "governance:write", "index:consume",
-                    "schedule:write", "index:rebuild"),
+                    "schedule:write", "index:rebuild", "datasource:read"),
             READER, READ_BASIC);
 
     private static final java.util.Map<String, String> ROLE_MAX_CLASSIFICATION = java.util.Map.of(

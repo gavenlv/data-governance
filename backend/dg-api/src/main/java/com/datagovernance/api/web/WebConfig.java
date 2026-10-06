@@ -25,7 +25,9 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
-        registry.addResourceHandler("/assets/**").addResourceLocations("file:" + webDist + "assets/");
+        // 静态产物目录是 static/（见 web/vite.config.ts 的 assetsDir）。
+        // 不能用 assets/：SPA 有一条 /assets 路由（资产页），撞名会让该页面直接打不开。
+        registry.addResourceHandler("/static/**").addResourceLocations("file:" + webDist + "static/");
         registry.addResourceHandler("/favicon.ico").addResourceLocations("file:" + webDist);
     }
 
@@ -33,9 +35,9 @@ public class WebConfig implements WebMvcConfigurer {
     public void addViewControllers(ViewControllerRegistry registry) {
         // SPA 路由：非 /api 前缀的路径统一回退到 index.html，由前端路由接管
         registry.addViewController("/").setViewName("forward:/index.html");
-        registry.addViewController("/{path:^(?!api|actuator|docs|api-docs|swagger-ui|assets|healthz)[^\\.]*}")
+        registry.addViewController("/{path:^(?!api|actuator|docs|api-docs|swagger-ui|static|healthz)[^\\.]*}")
                 .setViewName("forward:/index.html");
-        registry.addViewController("/{path:^(?!api|actuator|docs|api-docs|swagger-ui|assets|healthz)[^\\.]*}/**")
+        registry.addViewController("/{path:^(?!api|actuator|docs|api-docs|swagger-ui|static|healthz)[^\\.]*}/**")
                 .setViewName("forward:/index.html");
     }
 }

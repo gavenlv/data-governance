@@ -23,6 +23,17 @@ public class CoreCapabilities implements CapabilityProvider {
                         "ADR-005", "字段级来源优先级 MANUAL>IMPORTED>AI>COLLECTED，人工内容受保护"),
                 CapabilityDescriptor.implemented("core.run-rollback", "采集批次回滚", "D1 元数据底座",
                         "ADR-005", "按 runId 整体回退：恢复被更新的 aspect、删除该批次新建的 aspect"),
+                CapabilityDescriptor.implemented("core.asset-versioning", "资产版本管理与回滚", "D1 元数据底座",
+                        "docs/08 §4",
+                        "aspect 每次实质变更都归档到 aspect_history：资产级版本时间线（GET "
+                                + "/api/v1/assets/{urn}/versions）、查看任一历史版本、与当前版本 diff、"
+                                + "按版本回滚（POST .../aspects/{type}/rollback?version=N）",
+                        List.of("版本链只增不减：回滚是**追加新版本**（内容等于目标版本），"
+                                        + "历史版本永不被删除或覆盖，因此审计轨迹始终完整",
+                                "回滚直接还原 data 与 field_sources，**不走字段级来源合并** —— "
+                                        + "使用者要求'回到第 N 版'时，得到半新半旧的混合体比不回滚更难理解",
+                                "无实质变化的写入不产生新版本（内容指纹幂等），"
+                                        + "因此版本链上不会出现一串'什么都没改'的空版本")),
                 CapabilityDescriptor.implemented("core.event-outbox", "事件流（outbox）", "D1 元数据底座",
                         "ADR-002", "业务写入与 event_log 同事务提交，派生视图可重放重建"),
                 CapabilityDescriptor.implemented("core.lineage-graph", "血缘边与图遍历", "D3 血缘",

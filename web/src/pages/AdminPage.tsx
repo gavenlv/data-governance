@@ -8,6 +8,7 @@ import {
   Form,
   Input,
   Modal,
+  Popconfirm,
   Row,
   Select,
   Space,
@@ -20,7 +21,7 @@ import {
   message,
 } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type CollectRun } from '../api/client'
+import { api, type CollectRun, type DataSourceRow } from '../api/client'
 import { CapabilityBadge } from '../components/CapabilityBadge'
 import { useCapabilities } from '../hooks/useCapabilities'
 import { useTabParam } from '../hooks/useTabParam'
@@ -345,6 +346,8 @@ function CollectTab() {
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <DataSourceCard />
+
       <Card
         size="small"
         title="触发一次采集"
@@ -547,6 +550,373 @@ function CollectTab() {
       </Card>
     </Space>
   )
+}
+
+/**
+ * 数据源管理（连接录一次、反复复用）。
+ *
+ * <p>为什么要有它：以前每次采集/测试都要把完整 DSN 与口令重敲一遍，既容易出错，
+ * 口令也散落在聊天记录与终端历史里。这里把连接收敛成一条**加密存储**的记录 ——
+ * 之后的测试连接与扫描只传 id。
+ *
+ * <p>三条硬约束在界面上如实呈现，不粉饰：
+ * <ul>
+ *   <li>凭据用 AES-256-GCM 加密，密钥来自环境变量 <Text code>DG_SECRET_KEY</Text>，<b>不在库内</b>；</li>
+ *   <li>未配置密钥时<b>保存连接会被拒绝（502）</b>，而不是"先存明文以后再说"；</li>
+ *   <li>接口<b>永不回显凭据</b>，端点已去掉 user:password@ 与 password= 之类参数。</li>
+ * </ul>
+ */
+function DataSourceCard() {
+  const capabilities = useCapabilities()
+  const queryClient = useQueryClient()
+  const [form] = Form.useForm()
+  const [editing, setEditing] = useState<DataSourceRow | null>(null)
+  const [open, setOpen] = useState(false)
+
+  const sources = useQuery({ queryKey: ['collect-sources'], queryFn: () => api.collectSources() })
+  const dataSources = useQuery({ queryKey: ['data-sources'], queryFn: () => api.dataSources() })
+  const implemented = sources.data?.implemented ?? []
+  const cipher = dataSources.data?.cipher
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['data-sources'] })
+  }
+
+  const save = useMutation({
+    mutationFn: (values: Record<string, unknown>) => {
+      const body = {
+        name: String(values.name),
+        connector: String(values.connector),
+        namespace: values.namespace ? String(values.namespace) : undefined,
+        dsn: values.dsn ? String(values.dsn) : undefined,
+        jdbcUrl: values.jdbcUrl ? String(values.jdbcUrl) : undefined,
+        username: values.username ? String(values.username) : undefined,
+        password: values.password ? String(values.password) : undefined,
+        databases: splitList(values.databases),
+        schemas: splitList(values.schemas),
+        tables: splitList(values.tables),
+        sampleSize: values.sampleSize ? Number(values.sampleSize) : undefined,
+      }
+      return editing ? api.dataSourceUpdate(editing.id, body) : api.dataSourceCreate(body)
+    },
+    onSuccess: (row) => {
+      setOpen(false)
+      setEditing(null)
+      form.resetFields()
+      invalidate()
+      message.success(editing ? `已更新数据源「${row.name}」` : `已创建数据源「${row.name}」`)
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
+
+  const remove = useMutation({
+    mutationFn: (id: string) => api.dataSourceDelete(id),
+    onSuccess: () => {
+      invalidate()
+      message.success('已删除数据源')
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
+
+  const test = useMutation({
+    mutationFn: (id: string) => api.dataSourceTest(id),
+    onSuccess: (result) => {
+      if (result.ok) {
+        message.success(`连接可用（${result.platform ?? result.connector}，${result.durationMs ?? 0}ms）`)
+      } else {
+        message.warning(`测试已执行，但连不通：${result.note ?? '请检查端点与账号'}`)
+      }
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
+
+  const scan = useMutation({
+    mutationFn: (row: DataSourceRow) => api.dataSourceScan(row.id),
+    onSuccess: (result) => {
+      const status = result.status ?? 'SUCCEEDED'
+      if (status === 'BLOCKED') {
+        message.warning('扫描被护栏拦截：目录保持不变，请人工确认源端变化')
+      } else if (status === 'FAILED') {
+        message.error(`扫描失败：${(result.errors ?? [])[0] ?? '未知原因'}`)
+      } else {
+        message.success(`扫描完成：${status}（数据集 ${result.datasetsSeen ?? 0}）`)
+      }
+      invalidate()
+      void queryClient.invalidateQueries({ queryKey: ['collect-runs'] })
+      void queryClient.invalidateQueries({ queryKey: ['assets'] })
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
+
+  const openCreate = () => {
+    setEditing(null)
+    form.resetFields()
+    form.setFieldsValue({ connector: 'postgres', namespace: 'prod' })
+    setOpen(true)
+  }
+
+  const openEdit = (row: DataSourceRow) => {
+    setEditing(row)
+    form.resetFields()
+    form.setFieldsValue({
+      name: row.name,
+      connector: row.connector,
+      namespace: row.namespace ?? undefined,
+      databases: row.databases.join(','),
+      schemas: row.schemas.join(','),
+      tables: row.tables.join(','),
+      sampleSize: row.sampleSize ?? undefined,
+    })
+    setOpen(true)
+  }
+
+  const busy = test.isPending || scan.isPending
+
+  return (
+    <Card
+      size="small"
+      title="数据源（连接录一次，之后扫描免重输）"
+      extra={
+        <Space>
+          <CapabilityBadge status={capabilities.get('ingestion.datasource-registry')?.status ?? 'IMPLEMENTED'} />
+          <Button size="small" type="primary" onClick={openCreate}>
+            新建数据源
+          </Button>
+        </Space>
+      }
+    >
+      {cipher && !cipher.configured && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="凭据加密未启用：保存连接会被拒绝（502）"
+          description={
+            <>
+              {cipher.reason ?? '未配置加密密钥'}。生成密钥：
+              <Text code>openssl rand -base64 32</Text>，设 <Text code>DG_SECRET_KEY=&lt;该值&gt;</Text>{' '}
+              后重启控制面。{cipher.hint ?? ''}
+              <br />
+              <Text type="secondary">
+                刻意不设默认密钥：宁可拒绝保存，也不让凭据在"以为已加密"的情况下明文落库。
+              </Text>
+            </>
+          }
+        />
+      )}
+
+      {dataSources.isError && (
+        <Alert type="error" showIcon message={(dataSources.error as Error).message} style={{ marginBottom: 12 }} />
+      )}
+
+      <Table<DataSourceRow>
+        size="small"
+        rowKey="id"
+        loading={dataSources.isLoading}
+        dataSource={dataSources.data?.dataSources ?? []}
+        pagination={false}
+        locale={{ emptyText: <Empty description="还没有数据源。新建一个，之后扫描就不必再输连接串。" /> }}
+        columns={[
+          {
+            title: '名称',
+            dataIndex: 'name',
+            render: (value: string, row) => (
+              <Space direction="vertical" size={0}>
+                <Text strong>{value}</Text>
+                <span className="dg-mono" style={{ fontSize: 12 }}>
+                  {row.id}
+                </span>
+              </Space>
+            ),
+          },
+          {
+            title: '连接器',
+            dataIndex: 'connector',
+            width: 120,
+            render: (value: string) => <Tag color="blue">{value}</Tag>,
+          },
+          { title: '命名空间', dataIndex: 'namespace', width: 120 },
+          {
+            title: '端点（已脱敏）',
+            dataIndex: 'endpoint',
+            render: (value: string | null) =>
+              value ? <span className="dg-mono">{value}</span> : <Text type="secondary">—</Text>,
+          },
+          {
+            title: '凭据',
+            dataIndex: 'hasCredentials',
+            width: 90,
+            render: (value: boolean) =>
+              value ? <Tag color="green">已加密</Tag> : <Tag>无</Tag>,
+          },
+          {
+            title: '最近扫描',
+            width: 200,
+            render: (_, row) =>
+              row.lastScanAt ? (
+                <Space direction="vertical" size={0}>
+                  <Tag
+                    color={
+                      row.lastScanStatus === 'SUCCEEDED'
+                        ? 'green'
+                        : row.lastScanStatus === 'BLOCKED'
+                          ? 'orange'
+                          : 'red'
+                    }
+                  >
+                    {row.lastScanStatus ?? '—'}
+                  </Tag>
+                  <span className="dg-mono" style={{ fontSize: 12 }}>
+                    {row.lastScanAt.slice(0, 19)}
+                  </span>
+                </Space>
+              ) : (
+                <Text type="secondary">未扫描</Text>
+              ),
+          },
+          {
+            title: '操作',
+            width: 250,
+            render: (_, row) => (
+              <Space size={4}>
+                <Button
+                  size="small"
+                  type="link"
+                  disabled={busy}
+                  loading={test.isPending && test.variables === row.id}
+                  onClick={() => test.mutate(row.id)}
+                >
+                  测试连接
+                </Button>
+                <Button
+                  size="small"
+                  type="link"
+                  disabled={busy}
+                  loading={scan.isPending && scan.variables?.id === row.id}
+                  onClick={() => scan.mutate(row)}
+                >
+                  扫描
+                </Button>
+                <Button size="small" type="link" onClick={() => openEdit(row)}>
+                  编辑
+                </Button>
+                <Popconfirm
+                  title={`删除数据源「${row.name}」？`}
+                  description="已采集的元数据不受影响；仅删除这条连接记录。"
+                  okText="删除"
+                  cancelText="取消"
+                  onConfirm={() => remove.mutate(row.id)}
+                >
+                  <Button size="small" type="link" danger>
+                    删除
+                  </Button>
+                </Popconfirm>
+              </Space>
+            ),
+          },
+        ]}
+      />
+
+      <Modal
+        open={open}
+        title={editing ? `编辑数据源「${editing.name}」` : '新建数据源'}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={save.isPending}
+        width={640}
+        onOk={() => form.submit()}
+        onCancel={() => {
+          setOpen(false)
+          setEditing(null)
+        }}
+      >
+        <Form form={form} layout="vertical" onFinish={(values) => save.mutate(values)}>
+          <Form.Item name="name" label="名称" rules={[{ required: true, message: '给这条连接起个可检索的名字' }]}>
+            <Input placeholder="如 生产数仓-PostgreSQL" />
+          </Form.Item>
+          <Form.Item name="connector" label="连接器" rules={[{ required: true }]}>
+            <Select
+              options={implemented.map((item) => ({
+                value: item.id,
+                label: `${item.displayName}${item.verifiedAgainstRealSystem ? '' : '（未对真实系统验证）'}`,
+              }))}
+              onChange={(value: string) => {
+                const picked = implemented.find((item) => item.id === value)
+                if (picked?.dsnExample && !editing) {
+                  form.setFieldValue('dsn', picked.dsnExample)
+                }
+              }}
+            />
+          </Form.Item>
+          <Form.Item name="namespace" label="命名空间">
+            <Input placeholder="如 prod" />
+          </Form.Item>
+          <Form.Item
+            name="dsn"
+            label="DSN"
+            extra={
+              editing
+                ? '留空表示保持原值 —— 不必重敲完整连接细节。'
+                : '含账号口令，保存后即以 AES-256-GCM 加密存储，接口不会回显。'
+            }
+          >
+            <Input placeholder={editing ? '留空 = 不修改' : '如 postgresql://user:password@host:5432/db'} />
+          </Form.Item>
+          <Row gutter={12}>
+            <Col span={12}>
+              <Form.Item name="username" label="用户名">
+                <Input placeholder={editing ? '留空 = 不修改' : ''} autoComplete="off" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="password" label="口令">
+                <Input.Password placeholder={editing ? '留空 = 不修改' : ''} autoComplete="new-password" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={12}>
+            <Col span={12}>
+              <Form.Item name="databases" label="库 / Schema 过滤">
+                <Input placeholder="逗号分隔" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="schemas" label="Schema 过滤">
+                <Input placeholder="逗号分隔" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={12}>
+            <Col span={12}>
+              <Form.Item name="tables" label="表过滤">
+                <Input placeholder="逗号分隔，留空 = 全部" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="sampleSize" label="采样条数">
+                <Input type="number" placeholder="MongoDB 用" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
+            端点会去掉 <Text code>user:password@</Text> 与 <Text code>?password=</Text> 之类参数后才入库；
+            口令本体只以密文保存在 <Text code>secret_enc</Text> 列，密钥在环境变量里、不在库内。
+          </Paragraph>
+        </Form>
+      </Modal>
+    </Card>
+  )
+}
+
+/** 逗号分隔 → 数组；空串得到 undefined（表示"不过滤"）。 */
+function splitList(value: unknown): string[] | undefined {
+  if (value === undefined || value === null || String(value).trim() === '') {
+    return undefined
+  }
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
 }
 
 function HealthTab() {

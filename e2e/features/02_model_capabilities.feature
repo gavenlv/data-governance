@@ -24,3 +24,8 @@
     当 我以管理员令牌调用 GET /api/v1/capabilities
     那么 响应状态码应为 200
     并且 以下能力状态应均为 IMPLEMENTED：core.search-index/policy.rbac/policy.abac/ingestion.scheduler/lineage.impact-analysis
+
+  场景: 4c. 资产版本管理与数据源注册表已声明为 IMPLEMENTED
+    当 我以管理员令牌调用 GET /api/v1/capabilities
+    那么 响应状态码应为 200
+    并且 以下能力状态应均为 IMPLEMENTED：core.asset-versioning/ingestion.datasource-registry
