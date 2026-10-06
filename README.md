@@ -79,11 +79,17 @@ python tools/java_e2e_verify.py     # Java 控制面端到端（147 项；自动
 cd backend; mvn -B test             # Java 单元测试（150 项，含数组绑定门禁）
 $env:PYTHONPATH='src'; python -m pytest -q   # Python 参考实现（250 项）
 python tools/ui_render_check.py     # 界面渲染冒烟（无头 Chrome，逐标签页 dump DOM；10 项）
+python -m pytest e2e -p no:cacheprovider --gherkin-terminal-reporter   # 全项目 BDD（Gherkin，157 场景）
+python -m pytest e2e -m "not external" --gherkin-terminal-reporter     # 跳过外部依赖（ClickHouse/Mongo/Superset/Chrome 缺失时）
 python tools/dependency_audit.py --self-test  # 供应链：先证明扫描链路有效（反向用例）
 python tools/dependency_audit.py              # 供应链：0 干净 / 1 有阻断项 / 2 未验证
 $env:DG_API_TOKEN='dev-admin-token'; python tools/ci/contract_gate.py `
   --contract contracts/example_event_log.yaml --namespace java_e2e   # 契约 CI 门禁（退出码语义）
 ```
+
+> `e2e/` 是 BDD（Gherkin）全项目验收套件，**要求控制面已在 `http://127.0.0.1:8081` 运行**（套件不启动它，未就绪会快速失败并打印启动命令）；SQL 解析侧车由套件自动起停。它会写开发库 `java_e2e` 命名空间下的数据（幂等，绝不 TRUNCATE）。
+>
+> `--gherkin-terminal-reporter` 不兼容 xdist，请勿加 `-n`。
 
 CI 插件（可直接接进流水线）：
 
