@@ -1,7 +1,10 @@
 package com.datagovernance.api.web;
 
+import java.util.concurrent.TimeUnit;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.CacheControl;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
@@ -27,7 +30,14 @@ public class WebConfig implements WebMvcConfigurer {
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
         // 静态产物目录是 static/（见 web/vite.config.ts 的 assetsDir）。
         // 不能用 assets/：SPA 有一条 /assets 路由（资产页），撞名会让该页面直接打不开。
-        registry.addResourceHandler("/static/**").addResourceLocations("file:" + webDist + "static/");
+        //
+        // 缓存策略：Vite 构建产物文件名带内容哈希，因此可以长期公开缓存（immutable）。
+        // 显式设置 Cache-Control 还有一层作用：Spring Security 默认给响应加 no-store，
+        // 只有响应里已经有 Cache-Control 时它才会跳过 —— 不设这一行，带哈希的静态资源
+        // 每次刷新都要重新下载。index.html 不在此列（它必须每次回源，否则升级后仍加载旧入口）。
+        registry.addResourceHandler("/static/**")
+                .addResourceLocations("file:" + webDist + "static/")
+                .setCacheControl(CacheControl.maxAge(365, TimeUnit.DAYS).cachePublic().immutable());
         registry.addResourceHandler("/favicon.ico").addResourceLocations("file:" + webDist);
     }
 
