@@ -30,13 +30,17 @@ public class LineageController {
     private final com.datagovernance.lineage.SqlParseService parseService;
     private final com.datagovernance.lineage.LineageSubgraphService subgraphService;
     private final com.datagovernance.lineage.LineageCheckService checkService;
+    private final com.datagovernance.lineage.LineageReviewService reviewService;
+    private final com.datagovernance.lineage.LineagePathService pathService;
 
     public LineageController(MetadataService metadata, LineageService lineage,
                              SqlParseSidecarClient sidecar,
                              com.datagovernance.lineage.ImpactService impactService,
                              com.datagovernance.lineage.SqlParseService parseService,
                              com.datagovernance.lineage.LineageSubgraphService subgraphService,
-                             com.datagovernance.lineage.LineageCheckService checkService) {
+                             com.datagovernance.lineage.LineageCheckService checkService,
+                             com.datagovernance.lineage.LineageReviewService reviewService,
+                             com.datagovernance.lineage.LineagePathService pathService) {
         this.metadata = metadata;
         this.lineage = lineage;
         this.sidecar = sidecar;
@@ -44,6 +48,45 @@ public class LineageController {
         this.parseService = parseService;
         this.subgraphService = subgraphService;
         this.checkService = checkService;
+        this.reviewService = reviewService;
+        this.pathService = pathService;
+    }
+
+    /**
+     * 未确认血缘队列（docs/14 §2）。
+     *
+     * <p>回答的是"这张图里有多少条边没人确认过"。没有这个回答，血缘只是"看起来有"，
+     * 而且推断出来的边会越来越像真的 —— 一条错误血缘会让人做出错误的变更决策。
+     */
+    @GetMapping("/review")
+    public Map<String, Object> review(@RequestParam(required = false) String entityType,
+                                      @RequestParam(defaultValue = "100") int limit) {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "lineage:read");
+        return reviewService.queue(entityType, limit);
+    }
+
+    /** 血缘健康度：结构性 / 可信度 / 未确认三个口径分开给，不合成"健康分"。 */
+    @GetMapping("/health")
+    public Map<String, Object> health(@RequestParam(defaultValue = "30") Integer days) {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "lineage:read");
+        return reviewService.health(days);
+    }
+
+    /**
+     * 列级端到端路径追踪（A.col1 → B.col2 → C.metric）。
+     *
+     * <p>影响分析回答"改这张表会坏什么"，而使用者真正问的是"这个指标从哪来"。
+     * 后者必须给**一条连续链路**，而不是一张图让人自己找。
+     */
+    @GetMapping("/path")
+    public Map<String, Object> path(@RequestParam String from,
+                                    @RequestParam String to,
+                                    @RequestParam(defaultValue = "6") int maxDepth) {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "lineage:read");
+        return pathService.path(from, to, maxDepth);
     }
 
     /**

@@ -172,6 +172,7 @@ export default function LineagePage() {
           { key: 'impact', label: '影响分析', children: <ImpactTab direction={direction} depth={depth} onUrn={setTableUrn} impact={impact} /> },
           { key: 'quality', label: '血缘质量', children: <QualityTab qualityData={qualityData} sidecarHealth={sidecarHealth} /> },
           { key: 'parse', label: 'SQL 解析入库', children: <SqlParseCard /> },
+          { key: 'review', label: '审查与健康', children: <ReviewTab /> },
         ]}
       />
 
@@ -184,6 +185,116 @@ export default function LineagePage() {
           </List.Item>
         )}
       />
+    </Space>
+  )
+}
+
+/**
+ * 审查与健康：回答「这张图里有多少条边没人确认过」。
+ *
+ * 为什么单独一个页签：血缘的主要风险不是"画不出来"，而是"画出来了但没人核实"。
+ * 推断出来的边会越用越像真的，最后用来做变更决策 —— 这里让"未核实"始终可见。
+ */
+function ReviewTab() {
+  const review = useQuery({ queryKey: ['lineage-review'], queryFn: () => api.lineageReview({ limit: 100 }) })
+  const health = useQuery({ queryKey: ['lineage-health'], queryFn: () => api.lineageHealth(30) })
+  const [pathFrom, setPathFrom] = useState('')
+  const [pathTo, setPathTo] = useState('')
+  const pathQuery = useQuery({ queryKey: ['lineage-path', pathFrom, pathTo], queryFn: () => api.lineagePath(pathFrom, pathTo, 6), enabled: false })
+  const unconfirmed = (health.data?.unconfirmed ?? {}) as {
+    pendingReview?: number
+    lowConfidenceUnconfirmed?: number
+    oldestWaitingDays?: number | null
+  }
+  return (
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <Alert
+        type="info"
+        showIcon
+        message="未确认 ≠ 错误，但「未确认」必须一直可见"
+        description="低置信度边来自静态解析或推断（虚线/点线）；确认后置信度升到人工级，驳回只做标记、不删除记录 —— 否则同一条错误边会被反复采集回来。"
+      />
+      <Row gutter={16}>
+        <Col span={6}>
+          <Card size="small">
+            <Statistic title="待复核（显式标记）" value={unconfirmed.pendingReview ?? 0} />
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card size="small">
+            <Statistic title="低置信度且从未确认" value={unconfirmed.lowConfidenceUnconfirmed ?? 0} />
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card size="small">
+            <Statistic
+              title="最老一条等待（天）"
+              value={unconfirmed.oldestWaitingDays ?? '—'}
+              valueStyle={{ color: (unconfirmed.oldestWaitingDays ?? 0) > 14 ? '#cf1322' : undefined }}
+            />
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card size="small">
+            <Statistic title="窗口内检查发现" value={Number(health.data?.checksOpen ?? 0)} />
+          </Card>
+        </Col>
+      </Row>
+      <Card size="small" title="列级路径追踪（这个指标从哪个字段算出来的）">
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Text type="secondary">
+            只沿 ACTIVE 边向前追踪；整条链路的可信度取**最弱的一环**。找不到时会区分「深度内没有路径」与「这条路径更深」。
+          </Text>
+          <Input placeholder="起点 URN（上游，例如 urn:dg:Column:ns.platform.db.schema.table.column）" value={pathFrom} onChange={(e) => setPathFrom(e.target.value)} />
+          <Input placeholder="终点 URN（下游）" value={pathTo} onChange={(e) => setPathTo(e.target.value)} />
+          <Input.Search
+            enterButton="追踪路径"
+            loading={pathQuery.isFetching}
+            onSearch={() => { if (pathFrom && pathTo) pathQuery.refetch() }}
+          />
+          {pathQuery.data && (
+            <Alert
+              type={pathQuery.data.found ? 'success' : 'warning'}
+              showIcon
+              message={pathQuery.data.found
+                ? `找到 ${pathQuery.data.hops} 跳，最弱一环可信度 ${pathQuery.data.minConfidence}`
+                : '深度内没有找到路径'}
+              description={pathQuery.data.found
+                ? String((pathQuery.data.path as { from: string; to: string }[]).map((hop) => hop.to.split(':').pop()).join(' → '))
+                : String(pathQuery.data.note ?? '')}
+            />
+          )}
+        </Space>
+      </Card>      <Card size="small" title="未确认血缘队列">
+        <Table
+          size="small"
+          rowKey={(row) => String(row.edgeId)}
+          loading={review.isLoading}
+          dataSource={review.data?.edges ?? []}
+          pagination={{ pageSize: 10 }}
+          locale={{ emptyText: '队列为空：当前没有需要人工判断的边（这本身是个好信号）' }}
+          columns={[
+            { title: '原因', dataIndex: 'reason', width: 190, render: (value: string, row) => (
+              <Tooltip title={row.reasonText}>
+                <Tag color={value === 'pending_review' ? 'orange' : 'blue'}>
+                  {value === 'pending_review' ? '待复核' : '低置信度未确认'}
+                </Tag>
+              </Tooltip>
+            ) },
+            { title: '来源', dataIndex: 'source', width: 120 },
+            { title: '置信度', dataIndex: 'confidence', width: 90,
+              render: (value: number) => value.toFixed(2) },
+            { title: '粒度', dataIndex: 'parseLevel', width: 110, render: (v: string | null) => v ?? '—' },
+            { title: '边', render: (_: unknown, row) => (
+              <Text type="secondary" ellipsis={{ tooltip: `${row.fromUrn} → ${row.toUrn}` }}>
+                {row.fromUrn.split(':').pop()} → {row.toUrn.split(':').pop()}
+              </Text>
+            ) },
+            { title: '首次观测', dataIndex: 'firstSeen', width: 170,
+              render: (v: string | null) => (v ? v.slice(0, 19).replace('T', ' ') : '—') },
+          ]}
+        />
+      </Card>
     </Space>
   )
 }

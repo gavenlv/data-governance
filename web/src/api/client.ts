@@ -186,6 +186,21 @@ export const api = {
     return request<LineageCheckResponse>(`/api/v1/lineage/checks?${query}`)
   },
   lineageSidecar: () => request<Record<string, unknown>>('/api/v1/lineage/parse/sidecar'),
+  /** 未确认血缘队列：显式待复核 + 低置信度且从未人工确认的边（原因可区分）。 */
+  lineageReview: (params: { entityType?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams()
+    if (params.entityType) query.set('entityType', params.entityType)
+    query.set('limit', String(params.limit ?? 100))
+    return request<LineageReviewResponse>(`/api/v1/lineage/review?${query}`)
+  },
+  /** 列级端到端路径追踪：只走 ACTIVE 边，返回一条连续链路（不可达与「没找够」分开回答）。 */
+  lineagePath: (from: string, to: string, maxDepth = 6) => {
+    const query = new URLSearchParams({ from, to, maxDepth: String(maxDepth) })
+    return request<LineagePathResponse>(`/api/v1/lineage/path?${query}`)
+  },
+  /** 血缘健康度：结构性 / 可信度 / 未确认三个口径分开给。 */
+  lineageHealth: (days = 30) =>
+    request<Record<string, unknown>>(`/api/v1/lineage/health?days=${days}`),
   lineageParse: (body: {
     sql: string
     dialect: string
@@ -1344,6 +1359,55 @@ export interface LineageCheckFinding {
   source: string
   actor: string | null
   occurred_at: string
+}
+
+export interface LineagePathHop {
+  edgeId: number
+  from: string
+  to: string
+  source: string
+  confidence: number
+  parseLevel: string | null
+  transform: string | null
+}
+
+export interface LineagePathResponse {
+  from: string
+  to: string
+  maxDepth: number
+  searchedEdges: number
+  found: boolean
+  hops?: number
+  minConfidence?: number
+  nodes?: string[]
+  path: LineagePathHop[]
+  note?: string
+}
+
+export interface LineageReviewEdge {
+  edgeId: number
+  fromUrn: string
+  toUrn: string
+  edgeType: string
+  source: string
+  confidence: number
+  parseLevel: string | null
+  state: string
+  transform: string | null
+  firstSeen: string | null
+  lastSeen: string | null
+  observedCount: number
+  reason: 'pending_review' | 'low_confidence_unconfirmed'
+  reasonText: string
+}
+
+export interface LineageReviewResponse {
+  count: number
+  pendingReview: number
+  lowConfidenceUnconfirmed: number
+  lowConfidenceThreshold: number
+  edges: LineageReviewEdge[]
+  note: string
 }
 
 export interface LineageCheckResponse {
