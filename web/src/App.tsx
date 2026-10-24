@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import EmbedCardPage from './pages/EmbedCardPage'
 import { useQuery } from '@tanstack/react-query'
 import { Badge, Button, Input, Layout, Menu, Space, Tag, Tooltip, Typography } from 'antd'
 import {
@@ -41,6 +42,8 @@ const NAV = [
 
 export default function App() {
   const location = useLocation()
+  // 嵌入卡是给 BI/IDE 的 iframe 用的：不套平台导航，也不做登录跳转
+  if (location.pathname.startsWith('/embed/')) { return <EmbedCardPage /> }
   const [token, setTokenState] = useState(getToken())
   const capabilities = useCapabilities()
 

@@ -34,6 +34,23 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(payload);
     }
 
+    /**
+     * 嵌入令牌签名密钥不可用 → 502（部署缺配置，不是调用方写错了请求）。
+     *
+     * <p>与数据源凭据同样的纪律：**不降级**。用固定密钥或不签名都会让嵌入变成
+     * "任何能构造 URL 的人都能读任意资产"的入口。
+     */
+    @ExceptionHandler(com.datagovernance.api.embed.EmbedTokenService.NotConfigured.class)
+    public ResponseEntity<Map<String, Object>> embedNotConfigured(
+            com.datagovernance.api.embed.EmbedTokenService.NotConfigured e) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("error", "embed_token_not_configured");
+        payload.put("message", e.getMessage());
+        payload.put("hint", "设置 DG_SECRET_KEY 后重启控制面（openssl rand -base64 32）；"
+                + "嵌入令牌由它派生签名密钥，未配置时签发/校验一律 502");
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(payload);
+    }
+
     /** SQL 解析侧车不可用 → 502：必须显式失败，不能静默返回空血缘（docs/09 §9.2）。 */
     @ExceptionHandler(com.datagovernance.lineage.SqlParseSidecarClient.SidecarUnavailable.class)
     public ResponseEntity<Map<String, Object>> sidecarUnavailable(

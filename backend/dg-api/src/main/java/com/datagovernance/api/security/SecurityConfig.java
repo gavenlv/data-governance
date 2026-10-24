@@ -100,6 +100,10 @@ public class SecurityConfig {
                                 "/api/v1/edge/agent/report",
                                 "/api/v1/edge/agent/whoami").permitAll()
                         .requestMatchers("/healthz", "/actuator/health", "/actuator/health/**").permitAll()
+                        // 嵌入卡：iframe 无法携带 Bearer，因此改由**短期签名令牌**在服务层校验
+                        // （令牌绑定单个 URN、只读；签发端点仍需平台登录，见 EmbedController）。
+                        // 只放行这一个字面前缀，不放行 /api/v1/embed/token。
+                        .requestMatchers("/api/v1/embed/assets/**").permitAll()
                         .requestMatchers("/actuator/**").authenticated()
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().permitAll())

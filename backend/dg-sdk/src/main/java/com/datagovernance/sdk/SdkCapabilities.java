@@ -50,12 +50,18 @@ public class SdkCapabilities implements CapabilityProvider {
                                         + "错误令牌(1) / 用法错误(2) / 连接失败(3)（tools/sdk_cli_verify.py）",
                                 "**未实现**：init / codegen（模型工具链仍在 Python 侧，见 `core.codegen` 的说明）、"
                                         + "交互式 shell、写命令（采集触发与审批走 HTTP，不在本轮 CLI 范围）")),
-                CapabilityDescriptor.notImplemented("sdk.embedded", "嵌入式组件（BI/IDE）", "D2 目录与发现",
-                        "docs/14 §5", "Phase 2",
-                        "只读资产卡：在 BI/IDE/数据平台内嵌展示治理信息与申请入口",
-                        List.of("未实现",
-                                "设计要点：把治理信息放进用户已有的工作现场，而不是要求他们来平台",
-                                "已知风险（实现时必须解决）：嵌入卡片要独立的只读端点，"
-                                        + "不能复用管理接口 —— 否则「嵌入」会变成绕过权限的入口")));
+                CapabilityDescriptor.implemented("sdk.embedded", "嵌入式组件（BI/IDE）", "D2 目录与发现",
+                        "docs/14 §5",
+                        "只读资产卡：`POST /api/v1/embed/token` 用真实主体判定可见性后签发"
+                                + "**短期、单资产、只读**令牌；`GET /api/v1/embed/assets/{urn}?t=...` "
+                                + "无需平台登录，但只返回**字段白名单**（名称/类型/分级/生命周期/Owner/描述/链接）；"
+                                + "SPA 提供 `/embed/:urn` 紧凑卡片，可直接 iframe 引用",
+                        List.of("已实现：**独立只读端点**，不复用管理接口 —— 否则「嵌入」会变成绕过权限的入口",
+                                "已实现：令牌 HMAC-SHA256 签名、绑定单个 URN、默认 5 分钟（上限 1 小时）、"
+                                        + "密钥从 DG_SECRET_KEY 派生（带 context，不与数据源加密共用）；未配置密钥一律 502，绝不降级成不签名",
+                                "已实现：字段白名单显式列出 —— **不包含** schema 明细、连接信息、版本历史、审计记录；"
+                                        + "新增字段必须显式加进白名单",
+                                "已实现：可见性在签发时用真实主体判定（不可见按 404 处理，不泄漏资产存在性）",
+                                "**未实现**：嵌入卡的自定义主题/品牌、多资产列表卡、BI 工具内的深度链接回写")));
     }
 }

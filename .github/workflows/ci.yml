@@ -140,6 +140,8 @@ jobs:
         run: |
           export DG_MODEL_DIR="$PWD/model" DG_SQL_DIR="$PWD/sql" DG_API_PORT=8081
           export DG_WEB_DIST="$PWD/web/dist"
+          # 嵌入卡令牌需要签名密钥（CI 用固定测试密钥，生产必须换成真实随机值）
+          export DG_SECRET_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
           nohup java -jar backend/dg-api/target/dg-api-0.1.0.jar > server.log 2>&1 &
           for i in $(seq 1 60); do
             curl -sf http://127.0.0.1:8081/healthz && break || sleep 2
@@ -154,6 +156,8 @@ jobs:
           python tools/auth_jwt_verify.py
       - name: 命令行 dgctl 端到端（命令 / --json / 退出码语义）
         run: python tools/sdk_cli_verify.py
+      - name: 嵌入卡端到端（令牌签名 / 单资产绑定 / 字段白名单）
+        run: python tools/embed_verify.py
       - name: 失败时输出服务日志
         if: failure()
         run: tail -200 server.log
