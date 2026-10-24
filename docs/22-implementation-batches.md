@@ -7,7 +7,7 @@
 > `NOT_IMPLEMENTED` / `PARTIAL` 改成 `IMPLEMENTED`。** 状态虚标比不实现更糟。
 > 另：批次完成定义新增第 6 条「供应链安全扫描通过」（NFR-SEC-01）。
 
-进度：**已实现 40 / 部分 7 / 未实现 1 / 合计 48**（Batch 1 前为 14 / 2 / 21 / 37；另有并行工作流新增 2 项能力，见 `docs/21 §21.6`；Batch 9 新增 `policy.oidc-auth`；Batch 10 把 `dg-sdk` 装配进来，因此 `sdk.*` 三项首次进入计数）。
+进度：**已实现 41 / 部分 6 / 未实现 1 / 合计 48**（Batch 1 前为 14 / 2 / 21 / 37；另有并行工作流新增 2 项能力，见 `docs/21 §21.6`；Batch 9 新增 `policy.oidc-auth`；Batch 10 把 `dg-sdk` 装配进来，因此 `sdk.*` 三项首次进入计数）。
 仅剩的未实现项是 `core.index-opensearch`（检索后端替换，触发条件未到）；
 7 项部分实现的缺口与后续批次计划见 `docs/21 §19.6`、`§20.5`、`§22.6` 与 `§23.6`。
 
@@ -310,6 +310,21 @@ iframe URL 会进浏览器历史与代理日志，长期 Bearer 不能放进去�
 | `sdk.embedded` | 未实现 | ✅ 已实现 | 独立只读端点；签名令牌绑定 URN；字段白名单；未配置密钥 502 不降级 |
 
 验证：`tools/embed_verify.py` **9/9**、dg-api **66** 项单测（本批 +7）、`pnpm build` 通过。
+
+---
+### 2.13 Batch 13：语义检索的向量路（ai.semantic-search）
+
+混合检索此前只有两路（词法 + 术语扩展），`vector` 路显式写着"未实现"。本批把它打通，
+同时守住一条底线：**没有配模型就不宣称语义检索**。
+
+| 能力 ID | 原状态 | 结果 | 关键约束 |
+|---|---|---|---|
+| `ai.semantic-search` | 部分 | ✅ 已实现（机制） | 三路召回 + RRF；embedding 可插拔（none/hash/openai）；授权前置过滤；无 pgvector 时为有上限扫描并显式回报 truncated |
+
+三个诚实边界（写进能力 notes 与类注释）：`hash` provider **不是语义模型**（只用于打通链路与回归）；
+真实语义质量取决于所配置的模型；ANN 索引（HNSW/IVFFlat）未接入，装了 pgvector 可平滑替换。
+
+验证：`tools/vector_search_verify.py` **10/10**（含"未配置时不降级"与 502 语义）；dg-ai 新增 7 项单测。
 
 ---
 ## 3. 已知的、本计划不打算解决的边界（诚实前置）

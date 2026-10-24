@@ -1696,3 +1696,48 @@ pnpm build → 通过（新增 /embed/:urn 紧凑卡片，不套平台导航）
 1. 嵌入卡的主题/品牌定制与多资产列表卡；
 2. BI 工具内的深度链接回写（从卡片跳回具体图表）；
 3. 令牌吊销列表（当前靠 5 分钟短寿命；主动吊销需要服务端令牌表）。
+## 26. Batch 13：语义检索的向量路
+
+### 26.0 为什么"接上向量"比"接一个模型"难
+
+向量检索的难点不在调用 embedding 接口，而在四个工程问题：
+
+1. **没有配置时必须不可用**：否则"看起来有语义检索、实际只有词法"是最糟的结果；
+2. **授权必须前置**：先取回再过滤会泄漏"存在但无权看"的资产（docs/09 §9.3）；
+3. **模型更换后旧向量不可比较**：`search_vector` 记 `(provider, dimension)`，不匹配的向量被过滤并
+   在状态里报 `staleVectors`；
+4. **没有 ANN 索引时规模会崩**：默认部署无 pgvector，因此是"取候选 + Java 余弦 + 上限"，
+   并**显式回报 `truncated`**，而不是悄悄只算一部分。
+
+### 26.1 交付
+
+| 组件 | 说明 |
+|---|---|
+| `EmbeddingProvider` | 可插拔：`none`（默认，不可用）/ `hash`（确定性，仅打通链路与回归）/ `openai`（生产，OpenAI 兼容） |
+| `search_vector` 表 | JSONB 存向量 + `(provider, dimension, doc_hash)`：无 pgvector 的落地形态，也是未来切 ANN 的锚点 |
+| `VectorSearchService` | `rebuild`（内容哈希增量）、`search`（前置过滤 + 余弦 + 截断回报）、`status`（覆盖率/失配） |
+| 混合检索第三路 | RRF 融合；`retrievers[vector].available` 如实反映配置 |
+| 运维接口 | `GET /api/v1/ai/search/vectors`、`POST /api/v1/ai/search/vectors/rebuild`（需 `index:rebuild`） |
+
+### 26.2 验证
+
+```
+python tools/vector_search_verify.py → 10/10
+   provider=hash 可用 / 重建 860 条 / 二次重建全跳过（增量）/ 三路融合 / 向量确实贡献命中 /
+   scanned+truncated 回报 / READER 重建 403 / 未配置时 available=false 且词法不受影响 / 未配置重建 502
+mvn -B -f backend/pom.xml -pl dg-ai -am test → 7 项新单测全绿
+```
+
+### 26.3 修掉的缺陷
+
+| # | 缺陷 | 后果 | 修正 |
+|---|---|---|---|
+| 1 | `EmbeddingUnavailable` 未映射 | 未配置时重建向量索引返回 **500**，看起来像平台 bug | 映射为 **502**（缺配置，不是调用方错误），与 AI/侧车/密钥的语义一致 |
+
+### 26.4 仍然未做（诚实清单）
+
+1. **ANN 索引**：未接 pgvector/HNSW；当前是有上限的全量余弦扫描（`max-scan` 默认 2 万）；
+2. **真实语义质量未评估**：本机没有可用 embedding 模型，验证用的是 `hash` provider
+   （它只证明链路正确，不证明语义效果）；
+3. **向量增量跟随事件流**：当前靠手动/定时重建，未在索引消费者里联动；
+4. **多模态/多字段加权**：只对 `displayName + namespace + description` 编码。

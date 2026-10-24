@@ -35,6 +35,23 @@ public class ApiExceptionHandler {
     }
 
     /**
+     * 向量化服务不可用 → 502（缺配置/上游失败，不是调用方写错了请求）。
+     *
+     * <p>与 AI 未配置同样的纪律：明确失败。若降级成"跳过向量、静默只用词法"，
+     * 使用者会以为语义检索已经生效。
+     */
+    @ExceptionHandler(com.datagovernance.ai.embedding.EmbeddingProvider.EmbeddingUnavailable.class)
+    public ResponseEntity<Map<String, Object>> embeddingUnavailable(
+            com.datagovernance.ai.embedding.EmbeddingProvider.EmbeddingUnavailable e) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("error", "embedding_unavailable");
+        payload.put("message", e.getMessage());
+        payload.put("hint", "语义检索的向量路需要 embedding 服务：DG_AI_EMBEDDING_PROVIDER=openai + "
+                + "DG_AI_EMBEDDING_BASE_URL / DG_AI_EMBEDDING_MODEL；未配置时词法与术语扩展仍可用");
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(payload);
+    }
+
+    /**
      * 嵌入令牌签名密钥不可用 → 502（部署缺配置，不是调用方写错了请求）。
      *
      * <p>与数据源凭据同样的纪律：**不降级**。用固定密钥或不签名都会让嵌入变成

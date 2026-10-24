@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import com.datagovernance.ai.embedding.EmbeddingProvider;
 import com.datagovernance.core.search.SearchService;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -16,11 +17,13 @@ import org.springframework.stereotype.Service;
  *
  * <p>诚实边界（必须写在类注释里，否则很容易被误读）：
  * <ul>
- *   <li><b>已实现</b>：多路召回 + RRF 倒数排名融合 + 业务加权（分级/健康信号）+
- *       术语表同义词扩展（把"GMV"扩成"成交总额"这类别名，走的是术语实体，不是模型）；</li>
- *   <li><b>未实现</b>：真正的**向量/语义检索** —— 需要 embedding 服务（未配置），
- *       因此第二路召回目前是"术语同义词扩展"而不是 kNN。
- *       {@code vectorRetriever} 明确回报 {@code available: false}，不假装有语义检索。</li>
+ *   <li><b>已实现</b>：三路召回（词法 / 术语扩展 / **向量**）+ RRF 倒数排名融合 +
+ *       业务加权（分级/健康信号）；</li>
+ *   <li><b>向量路的边界</b>：embedding 由 {@code dg.ai.embedding.provider} 决定 ——
+ *       {@code openai} 是生产路径（OpenAI 兼容服务），{@code hash} 只用于打通链路与回归，
+ *       **不是语义模型**；未配置时 {@code vector} 路明确回报 {@code available: false}；</li>
+ *   <li><b>规模边界</b>：没有 pgvector 时为有上限的全量余弦扫描，超出上限显式回报
+ *       {@code truncated}；ANN 索引（HNSW/IVFFlat）未接入。</li>
  * </ul>
  *
  * <p>RRF：{@code score(d) = Σ 1/(k + rank_i(d))}，k 取 60（文档推荐值）。
@@ -34,11 +37,16 @@ public class HybridSearchService {
     private final JdbcTemplate jdbc;
     private final SearchService search;
     private final SuggestionService suggestions;
+    private final VectorSearchService vectors;
+    private final EmbeddingProvider embeddingProvider;
 
-    public HybridSearchService(JdbcTemplate jdbc, SearchService search, SuggestionService suggestions) {
+    public HybridSearchService(JdbcTemplate jdbc, SearchService search, SuggestionService suggestions,
+                               VectorSearchService vectors, EmbeddingProvider embeddingProvider) {
         this.jdbc = jdbc;
         this.search = search;
         this.suggestions = suggestions;
+        this.vectors = vectors;
+        this.embeddingProvider = embeddingProvider;
     }
 
     /**
@@ -63,6 +71,13 @@ public class HybridSearchService {
         applyRrf(fused, documents, expandByGlossary(query, entityType, visibleLevels, documents),
                 "glossary_expansion");
 
+        // 第 3 路：向量召回。未配置 embedding 时**明确不可用**，绝不静默退化成词法 ——
+        // 否则使用方会以为自己在用语义检索，实际上拿到的是字面匹配结果。
+        VectorSearchService.Outcome vectorOutcome = embeddingProvider.available()
+                ? vectors.search(query, entityType, visibleLevels, Math.max(limit, 20))
+                : new VectorSearchService.Outcome(List.of(), 0, false);
+        applyRrf(fused, documents, vectorOutcome.hits(), "vector");
+
         List<Map<String, Object>> ranked = new ArrayList<>();
         fused.entrySet().stream()
                 .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
@@ -82,8 +97,18 @@ public class HybridSearchService {
                         "note", "PG tsvector + 标识符切分 + 中文二元切分"),
                 Map.of("name", "glossary_expansion", "weight", 1.0, "available", true,
                         "note", "术语表同义词扩展（GMV → 成交总额）"),
-                Map.of("name", "vector", "weight", 0.0, "available", false,
-                        "note", "**未实现**：需要 embedding 服务（未配置），不假装有语义检索")));
+                Map.of("name", "vector", "weight", embeddingProvider.available() ? 1.0 : 0.0,
+                        "available", embeddingProvider.available(),
+                        "note", embeddingProvider.available()
+                                ? "余弦相似度（provider=" + embeddingProvider.id()
+                                        + "；无 pgvector 时为有上限的全量扫描，会显式回报截断）"
+                                : "**不可用**：未配置 embedding 服务，不假装有语义检索")));
+        payload.put("vector", Map.of(
+                "provider", embeddingProvider.id(),
+                "available", embeddingProvider.available(),
+                "scanned", vectorOutcome.scanned(),
+                "truncated", vectorOutcome.truncated(),
+                "hits", vectorOutcome.hits().size()));
         payload.put("fusion", Map.of("method", "RRF", "k", RRF_K,
                 "why", "RRF 不需要把不同量纲的分数归一化，这是混合检索能用起来的关键"));
         payload.put("indexLag", lexical.indexLag());

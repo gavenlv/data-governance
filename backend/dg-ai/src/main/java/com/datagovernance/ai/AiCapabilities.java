@@ -39,14 +39,22 @@ public class AiCapabilities implements CapabilityProvider {
                                 "已有待审同类建议、或 7 天内已裁决过的，不会重复生成（否则驳回等于没驳回）",
                                 "纪律：AI 只写 Suggestion，绝不直写 aspect",
                                 "验收：e2e 覆盖 生成→幂等→收件箱→采纳→aspect 落库（source=AI_GENERATED）→驳回需理由")),
-                CapabilityDescriptor.partial("ai.semantic-search", "语义检索", "D2 目录与发现",
-                        "docs/13 §1.1", "Phase 4",
-                        "混合检索：词法召回（含标识符切分与中文二元切分）+ 术语表同义扩展，"
-                                + "RRF（k=60）融合，授权分级前置过滤",
-                        List.of("已实现：两路召回 + RRF 融合 + 术语表查询扩展",
-                                "**未实现**：向量召回（无 embedding 服务），因此不宣称语义相似度",
-                                "安全要点：可见分级作为必传参数在 SQL 前置过滤，不是取回后再筛",
-                                "验收：e2e 覆盖同义术语（如「客户」→ customer）能召回、越权分级不返回")),
+                CapabilityDescriptor.implemented("ai.semantic-search", "语义检索", "D2 目录与发现",
+                        "docs/13 §1.1",
+                        "混合检索三路召回：词法（标识符切分 + 中文二元切分）+ 术语表同义扩展 + "
+                                + "**向量召回**（可插拔 embedding：none / hash / openai 兼容），"
+                                + "RRF（k=60）融合，授权分级**前置**过滤；向量索引可重建、可观测",
+                        List.of("已实现：向量路打通（embedding provider 可插拔）—— "
+                                        + "`POST /api/v1/ai/search/vectors/rebuild` 增量重建、"
+                                        + "`GET /api/v1/ai/search/vectors` 回报 provider/覆盖数/失配向量",
+                                "**诚实的规模边界**：默认部署没有 pgvector，召回是「取候选 + Java 余弦 + 上限"
+                                        + "（dg.ai.embedding.max-scan）」并**显式回报 truncated**；"
+                                        + "ANN 索引（HNSW/IVFFlat）未接入 —— 装了 pgvector 后可平滑替换",
+                                "**诚实的能力边界**：`hash` provider 只用于打通链路与回归，**不是语义模型**；"
+                                        + "真实语义质量取决于配置的模型（provider=openai）",
+                                "未配置 embedding 时 vector 路明确 `available=false`，词法结果不受影响；"
+                                        + "未配置时重建索引返回 502（缺配置，不是调用方错误）",
+                                "安全要点：可见分级作为必传参数在 SQL 前置过滤，不是取回后再筛")),
                 CapabilityDescriptor.implemented("ai.mcp", "MCP / Agent 接口", "D8 治理运营",
                         "docs/13 §6",
                         "MCP JSON-RPC 子集（initialize / tools/list / tools/call / ping），"

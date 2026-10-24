@@ -36,13 +36,38 @@ public class AiController {
     private final HybridSearchService hybrid;
     private final McpService mcp;
     private final SemanticLayerService semanticLayer;
+    private final com.datagovernance.ai.VectorSearchService vectors;
 
     public AiController(SuggestionService suggestions, HybridSearchService hybrid, McpService mcp,
-                        SemanticLayerService semanticLayer) {
+                        SemanticLayerService semanticLayer,
+                        com.datagovernance.ai.VectorSearchService vectors) {
         this.suggestions = suggestions;
         this.hybrid = hybrid;
         this.mcp = mcp;
         this.semanticLayer = semanticLayer;
+        this.vectors = vectors;
+    }
+
+    /**
+     * 混合检索的向量索引状态。
+     *
+     * <p>刻意单独暴露：向量路是否可用、用哪个 embedding、索引覆盖多少、有没有与当前模型
+     * 不匹配的历史向量 —— 这些是"检索看起来有结果但其实没走向量"的唯一可观测线索。
+     */
+    @GetMapping("/search/vectors")
+    public Map<String, Object> vectorStatus() {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "asset:read");
+        return vectors.status();
+    }
+
+    /** 重建向量索引（需要 {@code index:rebuild}：这是与重建检索索引同级的运维动作）。 */
+    @PostMapping("/search/vectors/rebuild")
+    public Map<String, Object> rebuildVectors(
+            @RequestParam(defaultValue = "5000") int limit) {
+        Subject subject = Subjects.require();
+        AccessPolicy.authorize(subject, "index:rebuild");
+        return vectors.rebuild(limit);
     }
 
     /** AI 能力状态（**诚实的出口**：哪些真能用、哪些没配置）。 */
@@ -59,8 +84,10 @@ public class AiController {
                 "available", true,
                 "lexical", true,
                 "glossaryExpansion", true,
-                "vector", false,
-                "note", "**向量检索未实现**：需要 embedding 服务（未配置），不假装有语义检索"));
+                "vector", vectors.status().get("available"),
+                "vectorProvider", vectors.status().get("provider"),
+                "note", "词法与术语扩展始终可用；向量路由 dg.ai.embedding.provider 决定"
+                        + "（openai=生产，hash=仅打通链路，none=不可用）。无 pgvector 时为有上限的全量扫描"));
         payload.put("mcp", Map.of("available", true, "note", "MCP 核心子集（initialize/tools/list/tools/call）"));
         payload.put("semanticLayer", Map.of("available", true, "note", "dbt / Cube 语义层指标接入"));
         return payload;

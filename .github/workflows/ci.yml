@@ -156,6 +156,8 @@ jobs:
           python tools/auth_jwt_verify.py
       - name: 命令行 dgctl 端到端（命令 / --json / 退出码语义）
         run: python tools/sdk_cli_verify.py
+      - name: 语义检索向量路（embedding 可插拔 / 增量重建 / 未配置时不降级）
+        run: python tools/vector_search_verify.py
       - name: 嵌入卡端到端（令牌签名 / 单资产绑定 / 字段白名单）
         run: python tools/embed_verify.py
       - name: 失败时输出服务日志

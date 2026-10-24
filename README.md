@@ -10,7 +10,7 @@
 
 **框架完整、界面完整、未实现的功能全部显式标注** —— 控制面的 `/api/v1/capabilities` 是唯一的
 状态真相源，界面按它渲染状态徽标，因此不会出现「界面以为有、接口其实没有」的漂移。
-当前 **48 项能力：40 已实现 / 7 部分实现 / 1 未实现**（`GET /api/v1/capabilities` 可查明细）。
+当前 **48 项能力：41 已实现 / 6 部分实现 / 1 未实现**（`GET /api/v1/capabilities` 可查明细）。
 仅剩的未实现项是 `core.index-opensearch`（检索后端替换，触发条件未到）；7 项部分实现的缺口在能力说明里逐条列出。
 
 分批实施进度见 `docs/22`：**Batch 1（检索 / 权限 / 调度 / SQL 解析）、Batch 2（剖析 / 规则引擎 /
@@ -83,6 +83,7 @@ python tools/java_e2e_verify.py     # Java 控制面端到端（153 项；自动
 python tools/auth_jwt_verify.py     # 认证端到端（29 项：JWT/JWKS 攻击面 + 生产 fail-closed；自己拉起控制面）
 python tools/sdk_cli_verify.py      # dgctl 端到端（11 项：命令 / --json / 退出码 1·2·3；需控制面在 8081）
 python tools/embed_verify.py        # 嵌入卡端到端（9 项：令牌签名/绑定/字段白名单；需 DG_SECRET_KEY）
+python tools/vector_search_verify.py # 语义检索向量路（10 项：增量重建/三路融合/未配置不降级；自带控制面）
 cd backend; mvn -B test             # Java 单元测试（240 项，含认证攻击面、SDK 传输层与数组绑定门禁）
 $env:PYTHONPATH='src'; python -m pytest -q   # Python 参考实现（250 项）
 python tools/ui_render_check.py     # 界面渲染冒烟（无头 Chrome，逐标签页 dump DOM；11 项）
