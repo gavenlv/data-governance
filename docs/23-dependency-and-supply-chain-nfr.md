@@ -283,6 +283,59 @@ python tools/dependency_audit.py             → 0 条漏洞（退出码 0）
 
 ---
 
+## 7.8 第二次使用豁免：一条"新公告"而不是"新依赖"（2026-10-24）
+
+Batch 9（生产认证，docs/21 §22）收尾重跑扫描时，出现了一条新的阻断项：
+
+```
+[BLOCK] CRITICAL org.springframework:spring-webmvc@6.2.19 GHSA-j9f9-w8pj-32f8 → 修复版本 7.0.9
+        Spring Framework Server Sent Event stream corruption while rendering fragments
+```
+
+**先确认它不是我们自己引入的风险**：本批唯一的依赖变更是新增
+`spring-boot-starter-oauth2-resource-server`（连带 nimbus-jose-jwt），
+`spring-webmvc` 的版本一个字节都没动。查 OSV 记录：
+
+| 字段 | 值 |
+|---|---|
+| published | 2026-08-27 |
+| github_reviewed_at | **2026-10-07** |
+| 上次扫描 | 2026-10-06 |
+
+也就是说：上次扫描时这条公告还没被 GitHub 复核（OSV 的 Maven 受影响区间依赖复核结果），
+所以**它是数据库更新，不是我们的新风险**。这一点必须写下来，否则下一个人会得出
+"新增 oauth2 依赖带来了 CRITICAL"的错误结论，并去回滚一个正确的改动。
+
+**能不能修 / 换？** 与 §7.7 完全相同：6.2.x 线 `last_affected 6.2.19`、无 `fixed`；
+修复只在 Spring Framework 7.0.9（= Spring Boot 4.x）。这是 Web 框架本体，无可替换物。
+
+**打得到吗？** 公告的触发条件是「Server-Sent Events + 视图 fragment 渲染」：
+
+| 前提 | 实际情况 | 证据 |
+|---|---|---|
+| 使用 SSE（`SseEmitter` / `ResponseBodyEmitter`） | **不成立** | 全仓库无任何 SSE / 流式响应引用 |
+| 使用 `StreamingResponseBody` 或 `text/event-stream` | **不成立** | 同上（编译期与文本两种检索都查过） |
+| 控制器返回流式响应 | **不成立** | 控制器统一返回 `ResponseEntity`/JSON |
+
+**守卫**：新增 `SseFragmentReachabilityGuardTest`（dg-api 测试）：
+
+- 扫描 `src/main` 下所有 Java 源码，出现 `SseEmitter` / `ResponseBodyEmitter` /
+  `StreamingResponseBody` / `text/event-stream` 即失败；
+- 校验豁免文件仍登记着该 GHSA 编号与到期日；
+- **反向自检**：用合成代码验证守卫真的会红，并验证普通 `ResponseEntity` 不会被误判；
+- 允许用 `sse-guard-ok` 注释显式豁免**注释行**（否则"写注释解释为什么不用 SSE"
+  反而会让守卫变红，人会索性删掉解释）。
+
+**豁免**：`security/dependency-waivers.yaml` 增加了 GHSA-j9f9-w8pj-32f8，
+`expires: 2026-11-23`（30 天）、owner 与 tracking 齐备。审计结果：
+**阻断 0 / 已豁免 2**，退出码 0。
+
+> **这一节的真正教训**：供应链扫描是"时间点结论"，不是"永久结论"。
+> 同一批依赖，隔 18 天重扫就多出一条 CRITICAL —— 所以"上个月扫过是干净的"
+> 不能作为上线依据；门禁必须每次构建都跑，而豁免必须带到期日。
+
+---
+
 ## 8. 已知边界（诚实清单）
 
 1. **扫描覆盖的是"已知"漏洞**：OSV 收录范围之外的问题扫不出来；

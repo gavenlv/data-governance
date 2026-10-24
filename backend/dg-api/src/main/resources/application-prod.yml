@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------------------
+# 生产 profile（DG_SPRING_PROFILES_ACTIVE=prod / --spring.profiles.active=prod）
+#
+# 这份文件只在 "prod" 生效，目的不是加功能，而是**收紧默认值**：
+#   1. 接口文档默认关闭 —— /docs 与 /api-docs 会暴露完整接口面，属于侦察资料；
+#      需要排障时用 DG_OPENAPI_ENABLED=true 临时打开。
+#   2. actuator 只暴露 health —— metrics/info 含连接池、JVM、请求量等内部信息。
+#   3. 错误响应不带内部信息 —— 异常消息与堆栈常常包含表名、SQL、路径。
+#   4. HSTS 默认一年 —— 生产应在 TLS 终结之后运行；HTTP 下浏览器会忽略该头，不会误伤开发。
+#
+# 认证不在这里设默认值：dg.auth.mode 必须由部署显式给出。
+#   - 留空 = static 模式，且若仍是内置开发令牌，**启动会失败**（AuthStartupValidator）；
+#   - 生产正确做法：DG_AUTH_MODE=jwt + DG_JWT_ISSUER + DG_JWT_AUDIENCE + DG_JWT_JWKS_URI。
+# 这是刻意的：一个能带着开发令牌启动的"生产环境"比启动失败危险得多。
+# ---------------------------------------------------------------------------
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+springdoc:
+  api-docs:
+    enabled: ${DG_OPENAPI_ENABLED:false}
+  swagger-ui:
+    enabled: ${DG_OPENAPI_ENABLED:false}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      # 健康详情含数据库/磁盘等内部状态；探活只需要 UP/DOWN
+      show-details: ${DG_HEALTH_DETAILS:never}
+
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+  tomcat:
+    # 本平台的请求体都是小 JSON；限制上传尺寸，避免用超大请求打满线程
+    max-http-form-post-size: 2MB
+    max-swallow-size: 2MB
+
+dg:
+  security:
+    hsts-max-age-seconds: ${DG_SECURITY_HSTS_MAX_AGE:31536000}
+    hsts-include-subdomains: true
+
+logging:
+  level:
+    com.datagovernance: INFO
+    # 生产不打印 SQL 参数（可能含个人数据）；排障时临时调成 DEBUG
+    org.springframework.jdbc.core: WARN

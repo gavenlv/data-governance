@@ -42,6 +42,11 @@
             <groupId>com.datagovernance</groupId>
             <artifactId>dg-ai</artifactId>
         </dependency>
+        <!-- 客户端 SDK：dg-api 依赖它以便把 dgctl 一起打进同一个产物（docs/21 §23） -->
+        <dependency>
+            <groupId>com.datagovernance</groupId>
+            <artifactId>dg-sdk</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -64,11 +69,27 @@
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
         </dependency>
         <!--
-          这里曾经依赖 jjwt（api/impl/jackson 三件套）用于 JWT 校验。
-          NFR-SEC-01（docs/23 §4）要求**删除未使用的依赖**：不用的库同样进产物、同样要跟着打补丁，
-          是纯粹的供应链负担。当前的令牌校验是静态令牌（AuthProperties），OIDC/JWKS 尚未实现；
-          将来真正实现 OIDC 时再按当时的维护状况重新选型（不再默认回到 jjwt）。
+          OIDC/JWKS 认证（docs/09 §9.7 的生产形态）。
+
+          选型说明（docs/21 §22）：这里曾删掉**未使用**的 jjwt 三件套（NFR-SEC-01：
+          不用的库同样是供应链负担），并留了一句"真正实现 OIDC 时按当时的维护状况重新选型"。
+          本轮按那句话重新选型，结论是 **Spring Security 自家的 resource-server**，而不是 jjwt：
+            - 它由 Spring Security 随 Boot BOM 一起发版，版本与已用的 spring-security-web 同源，
+              不存在"两个安全库各自打补丁"的版本漂移；
+            - JWK Set 的拉取、缓存、按 kid 选键、密钥轮换（未知 kid 时刷新）都是库内实现，
+              这些正是自研 JWT 校验最容易写错的地方；
+            - 算法族与密钥类型绑定（RSA 公钥无法验 HS256）由 JWSVerificationKeySelector 保证，
+              "算法混淆"不需要靠我们记得关掉某个开关；
+            - 令牌解析、时间/签发方/受众校验都有 OAuth2TokenValidator 组件，可组合、可测试。
+
+          代价：它带进 nimbus-jose-jwt（JOSE 实现）。这是**为认证引入的间接依赖**，
+          已一并纳入 docs/23 的扫描范围；不引入它就要么自研加密校验，要么继续只用静态令牌 ——
+          两者对"可上线"都更差。
         -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

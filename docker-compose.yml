@@ -42,15 +42,33 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DG_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-dg}:${POSTGRES_PASSWORD:-dg_local_password}@postgres:5432/${POSTGRES_DB:-dg}
+      # Java 控制面要 JDBC URL（不是 SQLAlchemy 的 postgresql+psycopg2://）。
+      # 用户名/密码分开给 —— 混在 URL 里时，密码含特殊字符会被错误解析。
+      DG_DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-dg}
+      DG_DATABASE_USER: ${POSTGRES_USER:-dg}
+      DG_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-dg_local_password}
       DG_NAMESPACE: ${DG_NAMESPACE:-prod}
       DG_TENANT: ${DG_TENANT:-default}
-      # 认证：静态令牌（开发）或 jwt（对接企业 OIDC）
+      DG_MODEL_DIR: /app/model
+      DG_SQL_DIR: /app/sql
+      DG_WEB_DIST: /app/web/dist
+      # 认证：static（开发/内网）或 jwt（生产对接 OIDC/SSO，见 docs/22 Batch 9）。
+      # 生产建议同时设置 SPRING_PROFILES_ACTIVE=prod —— 它启用严格默认值
+      # （关闭 /docs、actuator 只留 health、错误响应不带内部信息、开启 HSTS），
+      # 并让「用内置开发令牌启动」直接失败，而不是悄悄跑起来。
       DG_AUTH_MODE: ${DG_AUTH_MODE:-static}
-      DG_AUTH_TOKENS: ${DG_AUTH_TOKENS:-}
-      DG_JWT_SECRET: ${DG_JWT_SECRET:-}
-      DG_JWT_ALGORITHM: ${DG_JWT_ALGORITHM:-HS256}
-      DG_API_HOST: 0.0.0.0
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
+      DG_ADMIN_TOKEN: ${DG_ADMIN_TOKEN:-}
+      DG_STEWARD_TOKEN: ${DG_STEWARD_TOKEN:-}
+      DG_READER_TOKEN: ${DG_READER_TOKEN:-}
+      DG_JWT_ISSUER: ${DG_JWT_ISSUER:-}
+      DG_JWT_AUDIENCE: ${DG_JWT_AUDIENCE:-}
+      DG_JWT_JWKS_URI: ${DG_JWT_JWKS_URI:-}
+      DG_JWT_JWKS_FILE: ${DG_JWT_JWKS_FILE:-}
+      DG_JWT_JWKS_JSON: ${DG_JWT_JWKS_JSON:-}
+      DG_JWT_ROLES_CLAIM: ${DG_JWT_ROLES_CLAIM:-roles}
+      DG_SECURITY_HSTS_MAX_AGE: ${DG_SECURITY_HSTS_MAX_AGE:-0}
+      DG_SECRET_KEY: ${DG_SECRET_KEY:-}
       DG_API_PORT: "8080"
     ports:
       - "${DG_API_PORT:-8080}:8080"

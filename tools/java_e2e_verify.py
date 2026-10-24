@@ -1953,9 +1953,22 @@ models:
           all(spaview), "路由 /observability、/ai 均返回 SPA 外壳")
 
     status, html_assets = call("GET", "/", token=None)
-    bundled = re.search(r'/assets/(index-[A-Za-z0-9_-]+\.js)', html_assets) if isinstance(html_assets, str) else None
+    # 构建产物的目录是 /static/（web/vite.config.ts 的 assetsDir）。
+    # 刻意不用 Vite 默认的 /assets/：SPA 自己有一条 /assets 路由（资产页），
+    # 撞名会让"直接打开或刷新 /assets"被静态资源处理器截走。原先这里匹配的是 /assets/，
+    # 于是构建目录改成 /static/ 之后这条检查一直失败 —— 检查本身比被测对象更容易过期。
+    bundled = re.search(r'/static/(index-[A-Za-z0-9_-]+\.js)', html_assets) \
+        if isinstance(html_assets, str) else None
+    bundle_ok = False
+    bundle_detail = "未找到"
+    if bundled:
+        bundle_path = f"/static/{bundled.group(1)}"
+        bundle_status, bundle_body = call("GET", bundle_path, token=None)
+        # 只看"index.html 里引用了它"还不够：真正要证明的是**产物被服务出去了**
+        bundle_ok = bundle_status == 200 and isinstance(bundle_body, str) and len(bundle_body) > 10_000
+        bundle_detail = f"{bundle_path} → HTTP {bundle_status}，{len(bundle_body) if isinstance(bundle_body, str) else 0} 字节"
     check("23d. 界面产物与后端同源发布（构建产物确实被服务出去，而不是只存在于 dist 目录）",
-          bundled is not None, f"入口 bundle：{bundled.group(1) if bundled else '未找到'}")
+          bundle_ok, f"入口 bundle：{bundle_detail}")
 
     failed = [item for item in results if not item[1]]
     print("\n" + "=" * 66)

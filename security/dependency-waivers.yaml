@@ -35,3 +35,27 @@ waivers:
     owner: data-platform-team（需在安全评审会上指派具体负责人）
     expires: 2026-11-05                # 30 天；到期自动重新阻断，届时需复核或续期
     tracking: docs/23 §7.7 / docs/21 §21.5
+
+  # ---------------------------------------------------------------------------
+  # 第二条真实豁免（2026-10-24 登记）。
+  #
+  # 背景与上一条同源：CRITICAL，且 6.2.x 线**同样没有修复版本**（fixed 只在 7.0.9）。
+  # 不同的是这条的可达性判断更干净：触发路径是 SSE + 视图 fragment，
+  # 而本平台根本不产生流式响应。
+  # ---------------------------------------------------------------------------
+  - id: GHSA-j9f9-w8pj-32f8            # CVE-2026-47890：SSE 与视图 fragment 的流损坏
+    package: org.springframework:spring-webmvc
+    reason: >-
+      公告写明的触发路径是「Server-Sent Events（SseEmitter / ResponseBodyEmitter）+
+      视图 fragment 渲染」：只有用 SSE 逐段渲染视图片段的应用才会走到受损代码。
+      本平台是纯 JSON REST + 静态 SPA：全仓库没有任何 SseEmitter / ResponseBodyEmitter /
+      StreamingResponseBody / text/event-stream 引用，控制器统一返回 ResponseEntity（JSON），
+      不存在流式响应路径，因此打不到这段代码。
+      上游 6.2.x 线无修复版本（OSV: 6.2.0–6.2.19 last_affected、无 fixed），
+      修复只在 Spring Framework 7.0.9（= Spring Boot 4.x），与上一条同属世代迁移
+      （docs/23 §8 第 7 条），不适合与补丁混做。
+      守卫：dg-api 的 SseFragmentReachabilityGuardTest 会在有人引入任何 SSE/流式响应 API
+      时立即失败，从而让"打不到"这件事始终可验证。
+    owner: data-platform-team（需在安全评审会上指派具体负责人）
+    expires: 2026-11-23                # 30 天；到期自动重新阻断，届时需复核或续期
+    tracking: docs/23 §7.8 / docs/21 §22

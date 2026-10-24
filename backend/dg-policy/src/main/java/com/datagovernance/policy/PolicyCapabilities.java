@@ -19,6 +19,24 @@ public class PolicyCapabilities implements CapabilityProvider {
     @Override
     public List<CapabilityDescriptor> capabilities() {
         return List.of(
+                CapabilityDescriptor.implemented("policy.oidc-auth", "OIDC / JWKS 认证（生产形态）", "D7 访问治理",
+                        "docs/09 §9.7",
+                        "Bearer JWT 校验：公钥来源支持 JWKS URL / 文件（内网、air-gapped）/ 内联 JSON；"
+                                + "按 kid 选键并随缓存寿命轮换；**只允许非对称算法**；校验 iss / aud / exp / nbf"
+                                + "（时钟偏移可配）；角色声明名与外部组名映射可配 → 统一归一化为平台主体。"
+                                + "启动即校验配置：生产拒绝开发令牌、拒绝关闭认证、拒绝缺签发方或受众",
+                        List.of("已实现：JWT/JWKS 与静态令牌两条路径产出**同一种主体**（Principal），"
+                                        + "授权层（AccessPolicy）一行未改 —— 换认证不该改授权",
+                                "已实现：**fail-closed 启动校验**（AuthStartupValidator）—— 危险配置让控制面起不来，"
+                                        + "而不是运行时降级成匿名或宽松校验",
+                                "已实现：算法白名单按**固定集合**判断（Nimbus 对未知算法名会构造自定义实例，"
+                                        + "不能交给它决定），配置里出现 HS* / none / 未知算法 → 启动失败",
+                                "已实现：安全响应头基线（CSP、X-Frame-Options、Referrer-Policy、可配 HSTS）"
+                                        + "与 /actuator/** 鉴权（指标含连接池等内部信息，不能公开）",
+                                "**刻意不做**：不提供「跳过签名校验」「默认公钥」这类开关；"
+                                        + "JWKS 里出现私钥直接启动失败（那通常意味着 IdP 私钥被打进了部署物）",
+                                "**未做**：多 IdP（多个 issuer/JWKS）同时接入；令牌吊销列表 —— "
+                                        + "当前依赖 IdP 的短有效期，或由 IdP 侧 introspection 承担")),
                 CapabilityDescriptor.implemented("policy.rbac", "平台功能权限（RBAC）", "D7 访问治理",
                         "docs/09 §9.7",
                         "角色 ADMIN/STEWARD/EDITOR/READER → 权限点；未知角色丢弃（拒绝静默提权）；"

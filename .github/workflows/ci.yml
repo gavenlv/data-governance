@@ -148,6 +148,12 @@ jobs:
         run: |
           pip install --quiet -e . sqlglot pyyaml
           PYTHONPATH=src python tools/java_e2e_verify.py
+      - name: 认证端到端（JWT/JWKS 攻击面 + 生产 fail-closed）
+        run: |
+          pip install --quiet pyjwt cryptography
+          python tools/auth_jwt_verify.py
+      - name: 命令行 dgctl 端到端（命令 / --json / 退出码语义）
+        run: python tools/sdk_cli_verify.py
       - name: 失败时输出服务日志
         if: failure()
         run: tail -200 server.log

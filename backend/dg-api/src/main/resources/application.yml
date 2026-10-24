@@ -72,7 +72,10 @@ dg:
     # 设空 = 未部署：此时解析接口返回 502 并标注原因，**不**静默返回空血缘（docs/09 §9.2）
     sidecar-url: ${DG_LINEAGE_SIDECAR_URL:http://127.0.0.1:8099}
     sidecar-timeout-seconds: 15
-  # 认证（docs/09 §9.7）：static 静态令牌 | disabled 关闭（仅本机开发）
+  # 认证（docs/09 §9.7）
+  #   static   = 静态令牌表（仅开发/内网试用；生产启动会拒绝内置开发令牌）
+  #   jwt      = 校验企业 OIDC/SSO 签发的 Bearer JWT（**生产形态**）
+  #   disabled = 不做认证（仅本机开发；生产启动直接失败）
   auth:
     mode: ${DG_AUTH_MODE:static}
     # 静态令牌表：token -> id/name/roles
@@ -89,6 +92,33 @@ dg:
         id: reader@local
         name: 本地只读用户
         roles: [READER]
+    # JWT/JWKS（生产形态）—— 详见 docs/22「Batch 9」与 docs/09 §9.7。
+    #   公钥来源三选一：jwks-uri（常态）/ jwks-file（内网、air-gapped）/ jwks-json（单机、测试）。
+    # 刻意不提供"跳过签名校验"的开关：认证失败一律 401，绝不降级成匿名。
+    jwt:
+      # 必填：不校验签发方的 JWT 等于任何能签 JWT 的系统都能登录
+      issuer: ${DG_JWT_ISSUER:}
+      # 生产必填：多应用共用一个 IdP 时，不校验受众 = 别的系统的令牌能直接调用本平台
+      audience: ${DG_JWT_AUDIENCE:}
+      jwks-uri: ${DG_JWT_JWKS_URI:}
+      jwks-file: ${DG_JWT_JWKS_FILE:}
+      jwks-json: ${DG_JWT_JWKS_JSON:}
+      # 只允许非对称算法：JWKS 是公开信息，允许 HS* 等于让拿到公钥的人伪造令牌
+      algorithms: [RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512]
+      roles-claim: ${DG_JWT_ROLES_CLAIM:roles}
+      # 外部组名 → 平台角色（值仍会被归一化，未知角色丢弃）。示例：
+      #   role-aliases:
+      #     dg-admins: ADMIN
+      role-aliases: {}
+      name-claim: ${DG_JWT_NAME_CLAIM:name}
+      clock-skew-seconds: ${DG_JWT_CLOCK_SKEW_SECONDS:60}
+      jwks-cache-seconds: ${DG_JWT_JWKS_CACHE_SECONDS:300}
+      connect-timeout-seconds: ${DG_JWT_CONNECT_TIMEOUT_SECONDS:5}
+      read-timeout-seconds: ${DG_JWT_READ_TIMEOUT_SECONDS:5}
+      max-jwks-bytes: ${DG_JWT_MAX_JWKS_BYTES:524288}
+  # 响应安全头（默认安全；可用 DG_SECURITY_CONTENT_SECURITY_POLICY / DG_SECURITY_HSTS_MAX_AGE 覆盖）
+  security:
+    hsts-max-age-seconds: ${DG_SECURITY_HSTS_MAX_AGE:0}
 
 logging:
   level:

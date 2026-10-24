@@ -22,7 +22,7 @@ public final class Subjects {
     public static Subject current() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null
-                || !(authentication.getPrincipal() instanceof SecurityConfig.Principal principal)) {
+                || !(authentication.getPrincipal() instanceof Principal principal)) {
             return null;
         }
         Set<String> roles = principal.roles() == null ? Set.of() : principal.roles();
