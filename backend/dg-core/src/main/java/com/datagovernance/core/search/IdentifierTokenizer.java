@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
  * 搜 {@code orders} 就搜不到 —— 而"按表名片段找表"是数据目录里最高频的检索动作。
  * 因此必须叠加 {@code _ / - / . / : / \} 与驼峰切分。
  *
- * <p><b>覆盖边界（诚实标注）</b>：本实现不做中文**词典**分词，用 bigram 替代
+ * <p><b>中文切分</b>：词典分词（{@link ChineseSegmenter}，双向最大匹配）+ 全量 bigram 兜底 ——
  * （见 {@link #flushCjk}）。真分词需要 {@code pg_jieba/zhparser} 或迁到 OpenSearch + IK
  * （docs/21 §6 已固化为已知限制）。
  */
@@ -68,12 +68,10 @@ public final class IdentifierTokenizer {
         if (run.length() == 0) {
             return;
         }
-        if (run.length() == 1) {
-            out.append(run).append(' ');
-        } else {
-            for (int i = 0; i + 1 < run.length(); i++) {
-                out.append(run, i, i + 2).append(' ');
-            }
+        // 词典分词（双向最大匹配）+ 全量 bigram 兜底：
+        // 词典词是区分度更高的 lexeme，bigram 保证召回不低于改造前（见 ChineseSegmenter 类注释）。
+        for (String token : ChineseSegmenter.tokensForIndex(run.toString())) {
+            out.append(token).append(' ');
         }
         run.setLength(0);
     }

@@ -7,7 +7,7 @@
 > `NOT_IMPLEMENTED` / `PARTIAL` 改成 `IMPLEMENTED`。** 状态虚标比不实现更糟。
 > 另：批次完成定义新增第 6 条「供应链安全扫描通过」（NFR-SEC-01）。
 
-进度：**已实现 41 / 部分 6 / 未实现 1 / 合计 48**（Batch 1 前为 14 / 2 / 21 / 37；另有并行工作流新增 2 项能力，见 `docs/21 §21.6`；Batch 9 新增 `policy.oidc-auth`；Batch 10 把 `dg-sdk` 装配进来，因此 `sdk.*` 三项首次进入计数）。
+进度：**已实现 43 / 部分 4 / 未实现 1 / 合计 48**（Batch 1 前为 14 / 2 / 21 / 37；另有并行工作流新增 2 项能力，见 `docs/21 §21.6`；Batch 9 新增 `policy.oidc-auth`；Batch 10 把 `dg-sdk` 装配进来，因此 `sdk.*` 三项首次进入计数）。
 仅剩的未实现项是 `core.index-opensearch`（检索后端替换，触发条件未到）；
 7 项部分实现的缺口与后续批次计划见 `docs/21 §19.6`、`§20.5`、`§22.6` 与 `§23.6`。
 
@@ -325,6 +325,24 @@ iframe URL 会进浏览器历史与代理日志，长期 Bearer 不能放进去�
 真实语义质量取决于所配置的模型；ANN 索引（HNSW/IVFFlat）未接入，装了 pgvector 可平滑替换。
 
 验证：`tools/vector_search_verify.py` **10/10**（含"未配置时不降级"与 502 语义）；dg-ai 新增 7 项单测。
+
+---
+### 2.14 Batch 14：中文词典分词（core.search-chinese）与两项架构取舍的如实标注
+
+| 变更 | 内容 |
+|---|---|
+| `core.search-chinese` | 部分 → ✅ 实现：内置领域词表 + **双向最大匹配**，词词典之外用**全量 bigram 兜底**（召回不倒退）；写入/查询同构 |
+| `core.codegen` | 部分 → ✅ 实现：**唯一生成器（Python 模型工具链）是有意取舍**，不是缺口；此前把架构决定记成了未完成 |
+| `core.index-opensearch` | 仍未实现，但明确为**延后项而非能力缺口**：`SearchIndexConsumer`/查询接口不变即保证可替换，触发条件是实体 >500 万或需要真分词/kNN |
+
+诚实的边界：这是"领域词表 + 规则分词"，不是 jieba/zhparser 的通用分词（不做未登录词识别、词形还原、
+繁简归一、拼音）；新词靠 bigram 兜底召回。
+
+一个真实的召回缺陷（由验证发现并修复）：最初把未登录串切成"单字 + bigram"，而查询是 AND 语义 ——
+查「单明」时单字 token 在索引里不存在，导致**一条都搜不到**。修复为"多字串只保留 bigram，单字仅在整段为一个字时保留"。
+
+验证：`ChineseSegmenterTest` 7 项 + `IdentifierTokenizerTest` 9 项；实测「客户订单」→ customer_order_detail、
+「单明」（OOV）→ 同一资产、「字段」→ 20 条。
 
 ---
 ## 3. 已知的、本计划不打算解决的边界（诚实前置）

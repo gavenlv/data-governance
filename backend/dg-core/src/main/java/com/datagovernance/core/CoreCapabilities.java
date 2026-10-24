@@ -38,32 +38,35 @@ public class CoreCapabilities implements CapabilityProvider {
                         "ADR-002", "业务写入与 event_log 同事务提交，派生视图可重放重建"),
                 CapabilityDescriptor.implemented("core.lineage-graph", "血缘边与图遍历", "D3 血缘",
                         "docs/09 §9.2", "边带来源/置信度/时效；UNION 去环、深度有界、排除控制依赖"),
-                CapabilityDescriptor.partial("core.codegen", "模型→代码生成", "D1 元数据底座",
-                        "docs/08 §6", "Phase 1",
+                CapabilityDescriptor.implemented("core.codegen", "模型→代码生成", "D1 元数据底座",
+                        "docs/08 §6",
                         "由同一份 model/**.yaml 生成 Python 数据类 / TypeScript 类型 / JSON Schema；"
                                 + "生成物带「勿手改」头；本批次新增的 Metric 实体、metricSpec 等 4 个 aspect、"
                                 + "consumedBy 关系边都由它重新生成，未手写类型",
                         List.of("已实现：dgctl codegen（生成）+ dgctl codegen --check（校验生成物是否为最新）",
                                 "已实现：**CI 流水线**（.github/workflows/ci.yml）—— 模型校验、codegen --check、"
                                         + "Java 单测、前端构建、Python 测试、供应链扫描、端到端，全部作为门禁步骤",
-                                "**未实现：Java 侧生成器** —— Java 只做运行期模型校验（ModelRegistry），不生成代码。"
-                                        + "生成只有一个来源（Python 的模型工具链），避免两套生成器漂移。"
-                                        + "这是**有意的取舍**而不是缺口：两份生成器一定会漂移，而漂移的生成物比不生成更危险",
+                                "**没有 Java 侧生成器，这是有意取舍而不是缺口**：生成只有一个来源"
+                                        + "（Python 模型工具链）。两份生成器一定会漂移，而漂移的生成物比不生成更危险；"
+                                        + "Java 侧只做运行期模型校验（ModelRegistry）。"
+                                        + "因此本能力按「已实现」标注，而不是把架构决定记成未完成",
                                 "验收：CI 里 codegen --check 是门禁步骤（模型改了没重新生成 → 流水线红）")),
                 CapabilityDescriptor.implemented("core.search-index", "搜索索引消费者", "D2 目录与发现",
                         "docs/09 §9.3",
                         "从事件流构建可重放重建的检索视图（search_doc）；标识符切分（_/驼峰）+ 前置授权过滤 + "
                                 + "索引水位可见；POST /api/v1/index/rebuild 可证明派生视图确实可丢弃重建"),
-                CapabilityDescriptor.partial("core.search-chinese", "中文检索", "D2 目录与发现",
-                        "docs/09 §9.3", "Phase 2",
-                        "中文走 **bigram（二元切分）** 而非按字切分：多字中文标识符（如「客户订单明细」）"
-                                + "被切成重叠的二元组写入索引，查询侧同样切分，因此连续中文串能命中；"
-                                + "英文标识符仍按 _ / 驼峰切分",
-                        List.of("已实现：bigram 切分 + 查询侧同构切分（e2e 覆盖中文串能召回）",
-                                "**未实现：词典分词**（pg_jieba / zhparser / IK）—— bigram 的正确率低于真分词，"
-                                        + "会带来部分误召回（如「订单」与「单明」）；这是精度换可用性的折中，不是最终形态",
-                                "未实现：拼音别名、繁简归一、词典同义词（术语表扩展目前只在 ai.semantic-search 里做）",
-                                "升级路径：装 pg_jieba/zhparser 后把切分函数换成词典分词，索引与查询两侧同改即可")),
+                CapabilityDescriptor.implemented("core.search-chinese", "中文检索", "D2 目录与发现",
+                        "docs/09 §9.3",
+                        "中文走**词典分词**（内置领域词表 + 双向最大匹配）+ **全量 bigram 兜底**："
+                                + "词典词作为区分度更高的 lexeme 参与排序，bigram 保证召回不低于改造前；"
+                                + "写入侧与查询侧同构切分",
+                        List.of("已实现：词典分词（ChineseSegmenter：正向/反向最大匹配取优）+ bigram 兜底；"
+                                        + "词典随包发布，缺失时退化为纯 bigram 而不是崩溃",
+                                "**诚实边界**：这是**领域词表 + 规则分词**，不是 jieba/zhparser 那种通用分词 —— "
+                                        + "不做未登录词识别、词形还原、繁简归一与拼音；"
+                                        + "词典覆盖有限，新词靠 bigram 兜底召回",
+                                "升级路径：装 pg_jieba/zhparser 后把切分函数换成通用词典分词，写入与查询两侧同改即可",
+                                "验收：单测覆盖 词表加载 / 领域短语切分 / 双向匹配避免单字碎片 / 未登录串 bigram 兜底 / 写入查询同构")),
                 CapabilityDescriptor.notImplemented("core.index-opensearch", "OpenSearch 索引后端", "D2 目录与发现",
                         "docs/10 §3.2", "Phase 2",
                         "把检索索引从 PG tsvector 换成 OpenSearch（alias 零停机切换、IK 分词、kNN 向量）",
