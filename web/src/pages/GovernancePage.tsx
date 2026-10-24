@@ -49,8 +49,8 @@ const { Title, Text, Paragraph } = Typography
 /**
  * 治理入口（docs/09 §9.5 契约 + §9.7 访问治理）。
  *
- * Batch 2 已实现「数据契约」与「CI 门禁」；访问治理（申请审批 / 策略编译下发 / 审计复核）
- * 仍未实现，按能力清单渲染占位卡 —— 不假装有。
+ * 访问治理生命周期（申请审批 / 复核 / 策略编译下发 / 审计取证）与数据契约、违约事件。
+ * 状态一律取自能力清单，界面不自己维护"做完了哪些"。
  */
 export default function GovernancePage() {
   const capabilities = useCapabilities()
@@ -67,7 +67,7 @@ export default function GovernancePage() {
           <CapabilityBadge status={capabilities.get('policy.rbac')?.status ?? 'NOT_IMPLEMENTED'} />
         </div>
         <Text type="secondary">
-          数据契约与 CI 门禁（已实现）· 访问治理生命周期（未实现，见下方占位卡）。
+          数据契约、违约事件与访问治理生命周期（申请审批 / 复核 / 策略编译下发 / 审计取证）。
         </Text>
       </div>
 

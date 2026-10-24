@@ -10,15 +10,16 @@
 
 **框架完整、界面完整、未实现的功能全部显式标注** —— 控制面的 `/api/v1/capabilities` 是唯一的
 状态真相源，界面按它渲染状态徽标，因此不会出现「界面以为有、接口其实没有」的漂移。
-当前 **44 项能力：36 已实现 / 7 部分实现 / 1 未实现**（`GET /api/v1/capabilities` 可查明细）。
-仅剩的未实现项是 `core.index-opensearch`（检索后端替换，触发条件未到）；7 项部分实现的缺口在能力说明里逐条列出。
+当前 **48 项能力：39 已实现 / 7 部分实现 / 2 未实现**（`GET /api/v1/capabilities` 可查明细）。
+仅剩的未实现项是 `core.index-opensearch`（检索后端替换，触发条件未到）与 `sdk.embedded`（嵌入式资产卡）；7 项部分实现的缺口在能力说明里逐条列出。
 
 分批实施进度见 `docs/22`：**Batch 1（检索 / 权限 / 调度 / SQL 解析）、Batch 2（剖析 / 规则引擎 /
 ODCS 契约 / CI 门禁）、Batch 3（四个连接器 + BI 资产血缘 + 血缘画布）、
 Batch 4（访问申请审批 / 策略编译下发 / 覆盖率与审计）、Batch 5（AI 建议与 MCP / 异常检测与 SLO 事故 /
 语义层指标 / Edge Agent 推模式）、Batch 6（引擎审计摄入 / GitHub+GitLab CI 插件 / 仓库 CI 流水线）、
-Batch 7（dbt 连接器 + 编译期血缘）
-均已完成**（`docs/21 §12`–`§20`）。
+Batch 7（dbt 连接器 + 编译期血缘）、Batch 8（血缘 L2 校验层）、
+Batch 9（**生产认证：OIDC/JWKS + 安全基线**）、Batch 10（**Java 客户端 SDK + dgctl 命令行**）
+均已完成**（`docs/21 §12`–`§22`）。
 状态只在跑过可复现验证后才改，不虚标。
 
 ### 已支持的资产类别与数据源
@@ -79,7 +80,9 @@ pnpm dev        # http://127.0.0.1:5173，/api 自动代理到 8081
 
 ```powershell
 python tools/java_e2e_verify.py     # Java 控制面端到端（153 项；自动拉起并关闭 SQL 解析侧车）
-cd backend; mvn -B test             # Java 单元测试（171 项，含数组绑定门禁）
+python tools/auth_jwt_verify.py     # 认证端到端（29 项：JWT/JWKS 攻击面 + 生产 fail-closed；自己拉起控制面）
+python tools/sdk_cli_verify.py      # dgctl 端到端（11 项：命令 / --json / 退出码 1·2·3；需控制面在 8081）
+cd backend; mvn -B test             # Java 单元测试（240 项，含认证攻击面、SDK 传输层与数组绑定门禁）
 $env:PYTHONPATH='src'; python -m pytest -q   # Python 参考实现（250 项）
 python tools/ui_render_check.py     # 界面渲染冒烟（无头 Chrome，逐标签页 dump DOM；11 项）
 python -m pytest e2e -p no:cacheprovider --gherkin-terminal-reporter   # 全项目 BDD（Gherkin，167 场景）
@@ -119,13 +122,60 @@ include:
 当前实测（`tools/dependency_audit.py`，OSV 扫描）：
 
 ```
-依赖清点：Maven 99 · npm 80 · PyPI 8（合计 187 个依赖）
-已知漏洞：0 条 CRITICAL / 0 条 HIGH / 0 条 MEDIUM（豁免台账为空 —— 全部靠升级/替换/删除解决）
+依赖清点：Maven 105 · npm 80 · PyPI 8（合计 193 个依赖）
+已知漏洞：阻断 0 条 / 已豁免 2 条（两条都是同一类：spring-webmvc 6.2.x 无修复版本，
+          修复只在 Spring Framework 7.0.9 = Spring Boot 4.x；均带可达性论证、守卫测试与到期日）
 ```
 
-本轮为此完成的修复：Spring Boot `3.1.0 → 3.5.16`（3.1.x 已停止安全维护，原产物含
-10 项 CRITICAL、42 项 HIGH）、Tomcat/Jackson/commons-lang3/log4j2 显式固定到已修复补丁版本、
-`react-router-dom 6 → 7.18.4`、删除**未使用**的 jjwt 依赖。
+处理过程：
+
+- Spring Boot `3.1.0 → 3.5.16`（3.1.x 已停止安全维护，原产物含 10 项 CRITICAL、42 项 HIGH）、
+  Tomcat/Jackson/commons-lang3/log4j2 显式固定到已修复补丁版本、`react-router-dom 6 → 7.18.4`；
+- Batch 9 为 OIDC/JWKS 引入 `spring-boot-starter-oauth2-resource-server`（连带 nimbus-jose-jwt），
+  并**重新选型**而不是回到当时删掉的 jjwt：理由见 `backend/dg-api/pom.xml` 的注释；
+- 两条 `spring-webmvc` 的 CRITICAL（XsltView 路径限制、SSE + 视图 fragment 流损坏）**6.2.x 线无修复版本**，
+  按 NFR 登记豁免并各配一条守卫测试（`XsltViewReachabilityGuardTest`、`SseFragmentReachabilityGuardTest`），
+  详见 `docs/23 §7.7–§7.8`。第二条是**扫描数据库更新**发现的，不是新增依赖带来的。
+
+### 5) 生产上线检查清单
+
+```powershell
+# 1) 认证必须换成企业 OIDC/SSO（生产用 static 会启动失败）
+$env:SPRING_PROFILES_ACTIVE='prod'          # 关闭 /docs、actuator 仅 health、错误不带内部信息、开 HSTS
+$env:DG_AUTH_MODE='jwt'
+$env:DG_JWT_ISSUER='https://idp.example.com'                 # 必填
+$env:DG_JWT_AUDIENCE='dg-platform'                           # 生产必填（防兄弟应用令牌重放）
+$env:DG_JWT_JWKS_URI='https://idp.example.com/.well-known/jwks.json'
+# 2) 数据源凭据加密密钥（未配置时保存连接会 502，绝不明文落库）
+$env:DG_SECRET_KEY='<openssl rand -base64 32>'
+# 3) 数据库用 JDBC URL + 分开的用户名/密码
+$env:DG_DATABASE_URL='jdbc:postgresql://db:5432/dg'; $env:DG_DATABASE_USER='dg'; $env:DG_DATABASE_PASSWORD='***'
+java -jar backend\dg-api\target\dg-api-0.1.0.jar
+# 4) 验证：python tools/auth_jwt_verify.py（认证攻击面 + fail-closed 全部为绿）
+```
+
+上线前必须为绿的命令：`python tools/auth_jwt_verify.py`、`python tools/java_e2e_verify.py`、
+`cd backend && mvn -B test`、`python tools/dependency_audit.py`。
+生产配置写错时控制面**直接起不来**（这是刻意的，见 `docs/22 §2.9`），
+因此"服务起来了"本身就是配置正确的一条证据。
+
+### 6) 命令行 dgctl（与控制面同一产物）
+
+```powershell
+# 退出码：0 成功 / 1 平台错误 / 2 用法错误 / 3 连接失败（CI 可直接依赖）
+java -jar backend\dg-api\target\dg-api-0.1.0.jar dgctl doctor
+java -jar backend\dg-api\target\dg-api-0.1.0.jar dgctl capabilities
+java -jar backend\dg-api\target\dg-api-0.1.0.jar dgctl capabilities --json   # 脚本消费
+java -jar backend\dg-api\target\dg-api-0.1.0.jar dgctl search event
+java -jar backend\dg-api\target\dg-api-0.1.0.jar dgctl lineage "urn:dg:Dataset:..." --depth 2
+java -jar backend\dg-api\target\dg-api-0.1.0.jar dgctl impact "urn:dg:Dataset:..." --depth 2
+
+# 地址与令牌也可用环境变量：DG_API_URL / DG_API_TOKEN
+```
+
+CLI **不启动 Spring 容器**（不连库、不建 Web、不跑迁移），所以"数据库连不上"时
+诊断命令仍然可用 —— 那正是它要诊断的场景。编程调用用同一个传输层：
+`com.datagovernance.sdk.client.DgClient.of(url, token)`。
 
 ## 仓库结构
 
@@ -147,7 +197,7 @@ backend/                        ★ 控制面（Java 21 + Spring Boot 3，docs/1
 │                               策略编译（Trino/数仓/BI/SDK 四类产物）+ 覆盖率度量、审计取证
 ├─ dg-ai/                       AI 原生能力：建议引擎（人工采纳才落库）/ 混合检索（RRF）/
 │                               MCP 工具出口（按权限裁剪 + 全量审计）/ 语义层指标接入
-├─ dg-sdk/                      客户端 SDK（骨架，未实现）
+├─ dg-sdk/                      Java 客户端 SDK（DgClient）+ 命令行 dgctl（与控制面同一产物）
 └─ dg-api/                      REST API 与装配（Spring Boot 应用入口）
 
 web/                            ★ 界面（Vite + React + TypeScript，docs/10 §1 选型）
@@ -176,7 +226,8 @@ docs/                           调研报告（research/）+ 设计方案（06�
 | **可观测** | **异常检测（MAD / 季节性 MAD、样本不足显式跳过、上游抑制下游）**、**SLO 与错误预算（无数据时回报 no_data）**、**事故时间线与影响面 + 闭环强制沉淀规则** | 告警通道（邮件/IM/on-call）与告警状态机 |
 | **治理** | **访问申请与审批**、**授权与到期回收**、**定期复核与最小权限复盘（使用证据来自引擎审计）**、**引擎审计摄入（真实访问 / 未授权访问清单）**、**策略建模/编译/下发/回滚 + 覆盖率度量**、**审计取证（覆盖范围随实际数据动态生成）** | 策略直推执行引擎、多级会签与代理审批、术语复核、健康分 |
 | **AI 与 Agent** | **建议收件箱（人工采纳才落库、来源 AI_GENERATED、驳回需理由、采纳率统计）**、**混合检索（词法 + 术语同义扩展 + RRF）**、**MCP 工具出口（按权限裁剪、全量审计、Agent 只能提建议）**、**语义层指标接入与口径血缘** | 大模型推理（未配置即明确失败）、向量检索、MCP 的 resources/prompts/sampling |
-| **管理** | 采集（含护栏）、**数据源管理（连接一次录入反复复用：凭据 AES-256-GCM 加密且接口永不回显，留空即保持原值，可测试连接/一键扫描）**、采集健康度、**采集调度（YAML apply + cron + advisory lock 互斥）**、**检索索引维护（水位/重建）**、**Edge Agent 推模式（注册/心跳/上报/吊销/上报记录）**、模型摘要、**能力清单** | 告警、更多连接器、Go 单二进制 Agent 本体、OIDC/JWKS |
+| **管理** | 采集（含护栏）、**数据源管理（连接一次录入反复复用：凭据 AES-256-GCM 加密且接口永不回显，留空即保持原值，可测试连接/一键扫描）**、采集健康度、**采集调度（YAML apply + cron + advisory lock 互斥）**、**检索索引维护（水位/重建）**、**Edge Agent 推模式（注册/心跳/上报/吊销/上报记录）**、模型摘要、**能力清单** | 告警、更多连接器、Go 单二进制 Agent 本体、多 IdP 接入与令牌吊销 |
+| **认证（横切）** | **静态令牌（开发）** 与 **JWT/JWKS（生产：企业 OIDC/SSO）** 两条路径产出同一主体；启动 fail-closed（生产拒绝开发令牌/关闭认证/缺签发方或受众）；算法白名单仅非对称；`iss/aud/exp/nbf` 全校验；CSP/安全响应头；`/actuator/**` 鉴权 | 多 IdP 同时接入、令牌吊销/内省（依赖 IdP 短有效期） |
 
 ## 文档导航
 

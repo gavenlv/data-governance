@@ -282,7 +282,7 @@ export default function DiscoveryPage() {
         界面不维护自己的"做完了哪些"清单。
       </Paragraph>
 
-      {['core.search-chinese', 'ai.semantic-search', 'ai.semantic-layer'].map((id) => (
+      {['core.search-chinese', 'ai.semantic-search'].map((id) => (
         <NotImplementedCard key={id} capability={capabilities.get(id)} />
       ))}
     </Space>

@@ -106,19 +106,14 @@ export default function AssetDetailPage() {
               <span>·</span>
               <span>生命周期 {lifecycle?.stage ?? '—'}</span>
               <span>·</span>
-              <span>
-                访问审批 <Tag>未实现</Tag>
-              </span>
+              <Link to="/governance">访问审批</Link>
             </Space>
           </Descriptions.Item>
           <Descriptions.Item label="数据好不好">
             <Space>
-              <span>
-                质量规则 <Tag>未实现</Tag>
-              </span>
-              <span>
-                契约 <Tag>未实现</Tag>
-              </span>
+              <Link to="/quality">质量规则</Link>
+              <span>·</span>
+              <Link to="/governance?tab=contracts">契约</Link>
             </Space>
           </Descriptions.Item>
           <Descriptions.Item label="结构">

@@ -8,7 +8,6 @@ import {
   Form,
   Input,
   InputNumber,
-  List,
   Row,
   Select,
   Space,
@@ -24,7 +23,6 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type CompiledRulePreview, type ProfileResult, type QualityRuleRow, type RuleRunRow } from '../api/client'
 import { CapabilityBadge } from '../components/CapabilityBadge'
-import { NotImplementedCard } from '../components/NotImplementedCard'
 import { useCapabilities } from '../hooks/useCapabilities'
 
 const { Title, Text, Paragraph } = Typography
@@ -32,9 +30,9 @@ const { Title, Text, Paragraph } = Typography
 /**
  * 质量与契约（docs/09 §9.4–9.5）。
  *
- * Batch 2 已实现：剖析（含精度标注与隐私约束）、规则引擎（三种前端 → 统一 IR → 源库 SQL）、
- * 契约（ODCS + 兼容性 diff + 违约事件 + 消费者）、CI 门禁。
- * 异常检测与 SLO/事故仍为占位 —— 界面按能力清单渲染，不自己维护"做完了哪些"。
+ * 剖析（含精度标注与隐私约束）、规则引擎（三种前端 → 统一 IR → 源库 SQL）、
+ * 契约（ODCS + 兼容性 diff + 违约事件 + 消费者）、CI 门禁；异常检测与 SLO/事故在可观测页。
+ * 状态一律取自能力清单，界面不自己维护"做完了哪些"。
  */
 export default function QualityPage() {
   const capabilities = useCapabilities()
@@ -61,17 +59,6 @@ export default function QualityPage() {
           { key: 'rules', label: '规则', children: <RulesTab /> },
           { key: 'runs', label: '执行记录', children: <RunsTab /> },
         ]}
-      />
-
-      <List
-        header={<Text strong>仍未实现（Phase 2，Batch 5）</Text>}
-        grid={{ gutter: 16, column: 2 }}
-        dataSource={['quality.anomaly', 'quality.slo-incident']}
-        renderItem={(id) => (
-          <List.Item>
-            <NotImplementedCard capability={capabilities.get(id)} />
-          </List.Item>
-        )}
       />
     </Space>
   )

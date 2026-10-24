@@ -7,9 +7,9 @@
 > `NOT_IMPLEMENTED` / `PARTIAL` 改成 `IMPLEMENTED`。** 状态虚标比不实现更糟。
 > 另：批次完成定义新增第 6 条「供应链安全扫描通过」（NFR-SEC-01）。
 
-进度：**已实现 36 / 部分 7 / 未实现 1 / 合计 44**（Batch 1 前为 14 / 2 / 21 / 37；另有并行工作流新增 2 项能力，见 `docs/21 §21.6`）。
-仅剩的未实现项是 `core.index-opensearch`（检索后端替换，触发条件未到）；
-7 项部分实现的缺口与后续批次计划见 `docs/21 §19.6` 与 `§20.5`。
+进度：**已实现 39 / 部分 7 / 未实现 2 / 合计 48**（Batch 1 前为 14 / 2 / 21 / 37；另有并行工作流新增 2 项能力，见 `docs/21 §21.6`；Batch 9 新增 `policy.oidc-auth`；Batch 10 把 `dg-sdk` 装配进来，因此 `sdk.*` 三项首次进入计数）。
+仅剩的未实现项是 `core.index-opensearch`（检索后端替换，触发条件未到）与 `sdk.embedded`（嵌入式资产卡）；
+7 项部分实现的缺口与后续批次计划见 `docs/21 §19.6`、`§20.5`、`§22.6` 与 `§23.6`。
 
 ---
 
@@ -24,6 +24,8 @@
 | **Batch 3** ✅ | 血缘可视化 + 连接器 | `ingestion.connectors-more` 🟡、`ingestion.bi-assets` ✅、`lineage.visualization` 🟡 | 可视化依赖影响分析（Batch 1）；连接器依赖调度（Batch 1）。**三项均已交付（其中两项留有明确缺口）** |
 | **Batch 4** ✅ | 访问治理（差异化核心） | `policy.access-request`、`policy.compiler`、`policy.audit` | 依赖 `policy.rbac`/`abac`（Batch 1）、资产分级与契约（Batch 2）；`docs/20 §8` 认定这是最值得投入的差异化。**已完成**（compiler 留明确缺口：不直接推送执行引擎、直连绕过不可检测） |
 | **Batch 5** ✅ | 高级运营与 AI | `quality.anomaly` ✅、`quality.slo-incident` ✅、`ai.suggestion` ✅、`ai.mcp` ✅、`ai.semantic-layer` ✅、`ingestion.edge-agent` ✅、`ai.semantic-search` 🟡、`core.search-chinese` 🟡；`core.index-opensearch` ❌ 未做 | 依赖前四批的数据积累（质量历史、权限、血缘规模）；AI 无据不能答。**已完成**：7 项落地、2 项带明确缺口（向量检索 / 词典分词），1 项按计划不做 |
+| **Batch 9** ✅ | 生产认证与安全基线（**上线前置**） | `policy.oidc-auth` ✅（新增） | 前八批把"功能"补齐了，但认证一直是**静态令牌**（开发形态）。功能再全也不能这样上线：令牌不会过期、不绑定真实身份。因此这一批不新增业务功能，只把"能上线"缺的那块补上（见 §2.9 与 `docs/21 §22`） |
+| **Batch 10** ✅ | 客户端 SDK 与命令行 | `sdk.clients` ✅、`sdk.cli` ✅（`dg-sdk` 首次装配）；`sdk.embedded` ❌ 仍未做 | 平台"能用"之后的下一个问题是"怎么被别人用起来"：CI 要脚本化、运维要诊断、外部系统要调用。SDK 不是第二个平台，它只做传输与类型（见 §2.10 与 `docs/21 §23`） |
 
 > 说明：`policy.abac` 原计划在 Batch 4，实际提前到 Batch 1 —— 因为**检索的前置可见性过滤
 > 本身就要求分级判定**，把它推后会导致"先做一个会泄露无权资产存在性的搜索"。
@@ -163,6 +165,140 @@ Java 控制面调用它 → 把解析结果解析为 URN → 写 `edge` 表 → 
 
 ---
 
+### 2.9 Batch 9（已完成）：生产认证与安全基线
+
+前八批解决的是"功能有没有"，这一批解决的是"能不能上线"。触发点很具体：README 的
+「已知的、本计划不打算解决的边界」里有一条 **"生产认证仍须从静态令牌迁到 OIDC/JWKS"** ——
+它不在能力清单里，因此也不会被任何一次批次进度覆盖；但带着它上线，等于所有身份都靠
+一份配置文件里的明文令牌。**功能全绿 ≠ 可上线**，这条边界就是差别所在。
+
+| 能力 ID | 原状态 | 结果 | 关键设计约束 |
+|---|---|---|---|
+| `policy.oidc-auth`（新增） | — | ✅ 已实现 | `docs/09 §9.7`（认证方式可换、授权判定唯一入口）；`docs/23`（新增依赖必须过扫描） |
+
+落地内容：
+
+1. **JWT/JWKS 认证**（`dg.auth.mode=jwt`）：公钥来源支持 **JWKS URL / 文件 / 内联 JSON**
+   三选一（后两者给内网/air-gapped 与测试）；按 `kid` 选键、随缓存寿命轮换；
+   算法白名单**只允许非对称**；校验 `iss` / `aud` / `exp` / `nbf`（时钟偏移可配）；
+   角色声明名与"外部组名 → 平台角色"映射可配，最终仍走 `Roles.normalize`。
+2. **静态令牌保留为开发形态**，两条认证路径产出**同一种主体**（`Principal`），
+   因此授权层（`AccessPolicy`）一行未改。
+3. **启动 fail-closed**（`AuthStartupValidator`）：生产环境拒绝 `disabled`、拒绝内置开发令牌、
+   拒绝过短令牌、拒绝无 `id` 的令牌、拒绝 JWT 缺签发方/受众/公钥来源。
+   危险配置**让控制面起不来**，而不是运行时降级。
+4. **生产 profile**（`application-prod.yml`）：关闭 `/docs` 与 `/api-docs`、actuator 只留 `health`
+   且不暴露详情、错误响应不带内部信息、默认开启 HSTS。
+5. **安全响应头与接口面收缩**：CSP（`script-src 'self'`）、`X-Frame-Options: DENY`、
+   `Referrer-Policy: no-referrer`；`/actuator/**` 除 `health` 外一律需要认证。
+6. **部署物对齐**：`.env.example` 与 `docker-compose.yml` 原先写的是 Python 侧的
+   `postgresql+psycopg2://` DSN —— 对 Java 是非法 JDBC URL，按文档部署会直接起不来。
+   已改为 JDBC URL + 分开的用户名/密码，并把 JWT 相关变量补齐。
+
+验证（可复现）：
+
+```
+python tools/auth_jwt_verify.py        → 29/29（含 8 类攻击载荷与 2 项生产 fail-closed）
+mvn -B test                            → 230 项全绿（本批 +55：认证 52 + SSE 守卫 3）
+python tools/java_e2e_verify.py        → 153/153
+python tools/ui_render_check.py        → 11/11（CSP 开启后界面仍能渲染）
+python -m pytest -q                    → 250 项全绿
+python tools/dependency_audit.py       → 退出码 0（阻断 0 / 已豁免 2，见 docs/23 §7.8）
+```
+
+本批的缺陷密度不高，但四条都值得记住（详见 `docs/21 §22.5`）：
+
+1. **Nimbus 的 `JWSAlgorithm.parse` 接受任意算法名**（会构造自定义实例而不报错）——
+   于是 `RS999` 会安静地进入白名单。算法白名单必须按**固定集合**判断，不能交给库"解析成功"。
+2. **"设 0 关闭"从未生效**：`@Scheduled(fixedDelayString=0)` 会在启动时抛
+   `IllegalArgumentException`，类注释里写的关闭方式只会把控制面弄挂。改为按配置显式调度。
+3. **e2e 有一条检查一直在测过期约定**：它匹配 `/assets/index-*.js`，而构建产物早已是
+   `/static/...`（Vite `assetsDir` 为避开 `/assets` 路由而改）。检查本身比被测对象更容易过期。
+4. **HSTS 配了却永远不发送**：Spring 默认只在"请求本身是 HTTPS"时发这个头，而生产通常是
+   TLS 终结代理之后（到本进程是 HTTP）——配置看起来全对，头却从不出现。
+   改为显式对所有请求发送（浏览器按 RFC 6797 忽略经 HTTP 收到的 HSTS，无副作用）。
+
+> 这一批没有新增业务能力，却把一个**长期存在的"可上线"缺口**关掉了：
+> 认证从"配置文件里的明文令牌"变成"企业 IdP 签发的短期 JWT"，
+> 并且用 29 项端到端检查证明常见攻击载荷（`alg=none`、算法混淆、篡改、受众重放、
+> 未知 kid、过期/未生效）在本平台全部失败。
+
+---
+
+### 2.10 Batch 10（已完成）：客户端 SDK 与命令行 dgctl
+
+前九批解决"平台自己能做什么"，这一批解决"别人怎么用它"：CI 要脚本化、运维要一条诊断命令、
+外部系统要编程调用。`dg-sdk` 模块此前是一个**只有能力声明的空壳**，而且没有装配进 `dg-api`，
+所以它的三项能力连 `/api/v1/capabilities` 都不出现 —— 这种"声称有、其实没接"的状态比标注
+"未实现"更难发现，因此本批先把模块接上，再决定哪几项能算实现。
+
+| 能力 ID | 原状态 | 结果 | 关键设计约束 |
+|---|---|---|---|
+| `sdk.clients` | 未实现 | ✅ **Java** 客户端（名称由「多语言」改为「Java」，见下） | `docs/09 §9.10`（SDK 是访问方式，不是第二个平台） |
+| `sdk.cli` | 未实现 | ✅ `dgctl`（与控制面同一产物） | `docs/09 §9.10`（与 HTTP API 一致；退出码稳定） |
+| `sdk.embedded` | 未实现 | ❌ 仍未做 | `docs/14 §5`（嵌入卡必须独立只读端点，不能复用管理接口） |
+
+**一个必须显式做的改名**：`sdk.clients` 原名「多语言客户端 SDK」。本轮只交付 Java：
+TypeScript 的类型由 `core.codegen` 覆盖但没有运行时客户端，Python 侧是参考实现自带调用。
+把名字改成「Java 客户端 SDK」而不是留着原名 + 在 notes 里解释 —— 因为**名称比 notes 更容易被引用**。
+
+四条设计决定：
+
+1. **CLI 与控制面同一个产物**（`java -jar dg-api.jar dgctl ...`），且**不启动 Spring 容器**：
+   不连库、不建 Web 服务、不跑迁移。一条诊断命令不该因为数据库连不上而失败 ——
+   那正是它要诊断的场景。
+2. **CLI 与 SDK 共用同一传输层**：CLI 能做的 SDK 就能做，不会漂移；反过来也防止
+   "CLI 里偷偷绕过了鉴权/超时"。
+3. **不做隐式重试**：写操作（采集、审批、策略下发）不幂等，客户端擅自重试会造出重复记录。
+   SDK 只暴露 `isRetryable()`，由调用方决定。
+4. **未稳定的契约不固化类型**：能力清单/资产列表/检索/血缘图有 DTO，
+   资产详情与影响分析返回原始 JSON。过早固化会制造"看起来有类型其实会漏字段"的假 API。
+
+验证：
+
+```
+python tools/sdk_cli_verify.py   → 11/11
+   doctor / capabilities（含 --json 合法 JSON）/ search / asset / lineage / impact /
+   错误令牌→1 / 未知命令→2 / 服务不可达→3 / help
+mvn -B test                      → 240 项全绿（本批 +10：SDK 传输层）
+python tools/java_e2e_verify.py  → 153/153
+python tools/ui_render_check.py  → 11/11
+python -m pytest -q              → 250 项全绿
+```
+
+本批修掉的缺陷（都是"自己写的桩/自己写的输出"带来的）：
+
+| # | 缺陷 | 后果 | 修正 |
+|---|---|---|---|
+| 1 | 测试桩用 `ConcurrentHashMap` 存无查询串时的 `getQuery()`（返回 null） | 桩线程 NPE → 客户端只看到"连接被关闭"，看起来像被测代码坏了 | 用 `String.valueOf` 归一；并在桩里打印服务端异常 |
+| 2 | CLI 中文输出跟随平台代码页（Windows 上是 GBK） | 同一命令在控制台/CI/脚本捕获三种场景编码不同，断言中文的脚本随机失败 | CLI 显式把 stdout/stderr 固定为 UTF-8，并提示 `chcp 65001` / `--json` |
+
+计数变化：`dg-sdk` 首次装配 → 能力总数 **45 → 48**（已实现 39 / 部分 7 / 未实现 2）。
+
+---
+
+### 2.11 Batch 11（进行中）：血缘可视化剩余缺口
+
+`lineage.visualization` 一直标"部分实现"，剩余缺口有四项。本批先做其中**最能直接影响决策**的一项：
+"这张图里有多少条边没人确认过"。原因很直接：血缘的主要风险不是画不出来，而是**画出来了但没人核实**，
+而推断出来的边会越用越像真的。
+
+| 交付 | 状态 | 说明 |
+|---|---|---|
+| 未确认血缘队列 `GET /lineage/review` | ✅ | 「显式待复核」与「低置信度且从未人工确认」**分开计数**（原因可区分），附最老一条等待天数 |
+| 血缘健康度 `GET /lineage/health` | ✅ | 结构 / 来源 / 解析粒度三个口径分开给，**不合成健康分** |
+| 界面「审查与健康」页签 | ✅ | 四个指标卡 + 队列表格；`ui_render_check` 12/12 |
+| 时间轴回放 | ❌ | 需要边的 `valid_from/valid_to` 版本化（当前是 first_seen/last_seen + state） |
+| 超限聚合视图 | ❌ | 当前超限时显式提示并建议收窄条件 |
+| 列级端到端路径追踪 `GET /lineage/path` + 界面入口 | ✅ | 只走 ACTIVE 边；深度硬上限；「没路径」与「没找够」分开回答；链路可信度取最弱一环 |
+
+修复的真实缺陷：`(? || ' days')::interval` 在 PostgreSQL 报"无法确定参数类型"（改 `make_interval`）；
+`lineage_check_finding` 的时间列是 `occurred_at` 而不是 `created_at`（接口 500，靠真实调用发现）。
+
+
+
+---
+
 ## 3. 已知的、本计划不打算解决的边界（诚实前置）
 
 - `docs/09 §9.3` 的**中文词典分词**不在本轮范围：用 bigram 替代（Batch 5 已实现写入/查询同构切分），
@@ -171,4 +307,7 @@ Java 控制面调用它 → 把解析结果解析为 URN → 写 `edge` 表 → 
   因此平台**不宣称语义相似度**，`ai.semantic-search` 保持"部分实现"。
 - **行/列级数据访问**（策略真正落到引擎）属 Batch 4，且 `docs/20 §8` 已明确
   执行层应复用 Trino `SystemAccessControl` / Ranger / Lake Formation，不自建。
-- 生产认证仍须从静态令牌迁到 OIDC/JWKS。
+- ~~生产认证仍须从静态令牌迁到 OIDC/JWKS~~ —— **Batch 9 已完成**（§2.9）。
+  剩余的相关边界（不影响上线，但不该被当成"已解决"）：
+  **多 IdP 同时接入**（当前一个部署只校验一个 `issuer`）、**令牌吊销/内省**
+  （当前依赖 IdP 的短有效期），以及 MFA —— 后者属 IdP 职责，平台不重复实现。

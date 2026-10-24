@@ -57,12 +57,10 @@ export default function App() {
       <Header className="dg-header" style={{ height: 56, lineHeight: '56px' }}>
         <span className="dg-header-title">数据治理平台</span>
         <Tag color="blue">Java 控制面</Tag>
-        <Tag>Phase 0</Tag>
         {capabilities.data && (
-          <Tooltip title="已实现 / 部分实现 / 未实现 的能力数量，明细见「管理 › 能力清单」">
+          <Tooltip title="尚未闭合的能力数量，明细见「管理 › 能力清单」">
             <Space size={4}>
-              <Badge status="success" text={`${capabilities.data.summary.implemented} 已实现`} />
-              <Badge status="warning" text={`${capabilities.data.summary.partial} 部分`} />
+              <Badge status="warning" text={`${capabilities.data.summary.partial} 部分实现`} />
               <Badge status="default" text={`${capabilities.data.summary.notImplemented} 未实现`} />
             </Space>
           </Tooltip>

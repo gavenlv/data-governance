@@ -122,7 +122,7 @@ function EdgeTab() {
       <Alert
         type="warning"
         showIcon
-        message="推模式的协议与控制面已实现；Agent 本体（Go 单二进制）未实现"
+        message="推模式的协议与控制面已就绪；Agent 本体（Go 单二进制）未实现"
         description={
           <>
             任何能发 HTTP 的采集器（脚本 / cron / k8s Job）现在就能用：
